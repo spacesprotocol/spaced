@@ -1,0 +1,21 @@
+[package]
+name = "protocol"
+version = "0.0.1"
+edition = "2021"
+
+[dependencies]
+bitcoin = { version = "0.31.2", features = ["base64", "serde", "no-std"], default-features = false }
+log = "0.4.14"
+
+## optional features
+bincode = { version = "2.0.0-rc.3", features = [ "derive", "serde" ], default-features = false, optional = true }
+serde = { version = "^1.0", features = ["derive"], default-features = false, optional = true }
+
+[dev-dependencies]
+rand = "0.8.5"
+
+[features]
+default = []
+serde = ["dep:serde"]
+bincode = ["dep:bincode"]
+std = ["serde", "bincode"]

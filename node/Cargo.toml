@@ -1,0 +1,39 @@
+[package]
+name = "spaced"
+version = "0.0.1"
+edition = "2021"
+
+
+[[bin]]
+name = "space-cli"
+path = "src/bin/space-cli.rs"
+
+[[bin]]
+name = "spaced"
+path = "src/bin/spaced.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+bdk_bitcoind_rpc = "0.10.0"
+bdk_chain = "0.14.0"
+bdk = "1.0.0-alpha.11"
+wallet = { path = "../wallet" }
+tokio = { version = "1.37.0", features = ["signal"] }
+ctrlc = "3.4.4"
+anyhow = "1.0.86"
+clap = { version = "4.5.6", features = ["derive", "env"] }
+log = "0.4.21"
+serde = { version = "1.0.200", features = ["derive"] }
+toml = "0.8.14"
+hex = "0.4.3"
+jsonrpsee = { version = "0.22.5", features = ["server", "http-client", "ws-client", "macros", "client-ws-transport-native-tls"] }
+directories = "5.0.1"
+env_logger = "0.11.3"
+serde_json = "1.0.116"
+bincode = {version = "2.0.0-rc.3", features = ["serde", "derive"]}
+protocol = { path = "../protocol", version = "*", features = ["std"]}
+spacedb = { git = "https://github.com/spacesprotocol/spacedb", tag = "0.0.1" }
+base64 = "0.22.1"
+futures = "0.3.30"
