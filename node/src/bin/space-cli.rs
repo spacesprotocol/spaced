@@ -388,7 +388,6 @@ async fn handle_commands(cli: &SpaceCli, command: Commands) -> std::result::Resu
             })), None, fee_rate).await?
         }
         Commands::SendCoins { amount, mut to, fee_rate } => {
-            to = normalize_space(&to);
             cli.send_request(Some(RpcWalletRequest::SendCoins(SendCoinsParams {
                 amount: Amount::from_sat(amount),
                 to,
