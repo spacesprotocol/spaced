@@ -1,5 +1,5 @@
-use alloc::string::{String};
-use core::fmt::{self, Formatter, Display};
+use alloc::string::String;
+use core::fmt::{self, Display, Formatter};
 
 pub type Result<T> = core::result::Result<T, Error>;
 
@@ -16,20 +16,19 @@ pub enum TXErrorKind {
     MissingAuctionedOutput,
     AuctionedOutputAlreadySpent,
     InvalidBidPSBTSignature,
-    InvalidBidPSBTFormat
+    InvalidBidPSBTFormat,
 }
 
 #[derive(Debug)]
 pub enum StateErrorKind {
     ExpectedSpace,
     InvalidRolloutState,
-    MissingOpenTxOut
+    MissingOpenTxOut,
 }
-
 
 #[derive(Debug)]
 pub enum NameErrorKind {
-    MalformedName
+    MalformedName,
 }
 
 impl Display for Error {

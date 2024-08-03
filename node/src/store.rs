@@ -1,23 +1,30 @@
-use std::collections::{BTreeMap, BTreeSet};
-use std::{io, mem};
-use std::fs::OpenOptions;
-use std::io::ErrorKind;
-use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
-use protocol::bitcoin::{BlockHash, OutPoint};
-use serde::{Deserialize, Serialize};
-use spacedb::db::{Database, SnapshotIterator};
-use spacedb::{Configuration, Hash, NodeHasher, Sha256Hasher};
-use spacedb::tx::{KeyIterator, ReadTransaction, WriteTransaction};
-use anyhow::{Result};
-use bdk_chain::BlockId;
-use bdk_chain::local_chain::CheckPoint;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs::OpenOptions,
+    io,
+    io::ErrorKind,
+    mem,
+    path::PathBuf,
+    sync::{Arc, RwLock},
+};
+
+use anyhow::Result;
 use bincode::{config, Decode, Encode};
-use spacedb::fs::FileBackend;
-use protocol::hasher::{BidHash, KeyHash, OutpointHash, SpaceHash};
-use protocol::{FullSpaceOut, Params, SpaceOut};
-use protocol::bitcoin::hashes::Hash as HashUtil;
-use protocol::prepare::DataSource;
+use protocol::{
+    bitcoin::{hashes::Hash as HashUtil, BlockHash, OutPoint},
+    hasher::{BidHash, KeyHash, OutpointHash, SpaceHash},
+    prepare::DataSource,
+    FullSpaceOut, Params, SpaceOut,
+};
+use serde::{Deserialize, Serialize};
+use spacedb::{
+    db::{Database, SnapshotIterator},
+    fs::FileBackend,
+    tx::{KeyIterator, ReadTransaction, WriteTransaction},
+    Configuration, Hash, NodeHasher, Sha256Hasher,
+};
+
+use crate::source::RpcBlockId;
 
 type SpaceDb = Database<Sha256Hasher>;
 type ReadTx = ReadTransaction<Sha256Hasher>;
@@ -60,18 +67,17 @@ pub struct StoreCheckpoint {
 }
 
 impl StoreCheckpoint {
-    pub fn to_checkpoint(&self) -> CheckPoint {
-        CheckPoint::new(BlockId {
+    pub fn block_id(&self) -> RpcBlockId {
+        RpcBlockId {
             height: self.block_height,
             hash: self.block_hash,
-        })
+        }
     }
 }
 
 impl Store {
-
     pub fn open(path: PathBuf) -> Result<Self> {
-       let db = Self::open_db(path)?;
+        let db = Self::open_db(path)?;
         Ok(Self(db))
     }
 
@@ -87,8 +93,7 @@ impl Store {
             .create(true)
             .open(path_buf)?;
 
-        let config = Configuration::new()
-            .with_cache_size(1000000 /* 1MB */);
+        let config = Configuration::new().with_cache_size(1000000 /* 1MB */);
         Ok(Database::new(Box::new(FileBackend::new(file)?), config)?)
     }
 
@@ -105,7 +110,9 @@ impl Store {
         let meta: StoreCheckpoint = if snapshot.metadata().len() == 0 {
             StoreCheckpoint {
                 block_height: params.activation_block_height,
-                block_hash: BlockHash::from_raw_hash(HashUtil::from_byte_array(params.activation_block)),
+                block_hash: BlockHash::from_raw_hash(HashUtil::from_byte_array(
+                    params.activation_block,
+                )),
                 tx_count: 0,
             }
         } else {
@@ -135,18 +142,18 @@ pub trait ChainStore {
 impl ChainStore for Store {
     fn rollout_iter(&self) -> Result<(RolloutIterator, ReadTx)> {
         let snapshot = self.0.begin_read()?;
-        Ok((RolloutIterator {
-            inner: snapshot.iter(),
-            n: 0,
-        }, snapshot))
+        Ok((
+            RolloutIterator {
+                inner: snapshot.iter(),
+                n: 0,
+            },
+            snapshot,
+        ))
     }
 }
 
 #[derive(Encode, Decode)]
-pub struct EncodableOutpoint(
-    #[bincode(with_serde)]
-    pub OutPoint
-);
+pub struct EncodableOutpoint(#[bincode(with_serde)] pub OutPoint);
 
 impl From<OutPoint> for EncodableOutpoint {
     fn from(value: OutPoint) -> Self {
@@ -166,7 +173,10 @@ pub trait ChainState {
 
     fn update_bid(&self, previous: Option<BidHash>, bid: BidHash, space: SpaceHash);
 
-    fn get_space_info(&mut self, space_hash: &protocol::hasher::SpaceHash) -> anyhow::Result<Option<FullSpaceOut>>;
+    fn get_space_info(
+        &mut self,
+        space_hash: &protocol::hasher::SpaceHash,
+    ) -> anyhow::Result<Option<FullSpaceOut>>;
 }
 
 impl ChainState for LiveSnapshot {
@@ -206,6 +216,19 @@ impl LiveSnapshot {
         self.staged.read().expect("read").memory.len() > 0
     }
 
+    pub fn restore(&self, checkpoint: StoreCheckpoint) {
+        let snapshot_version = checkpoint.block_height;
+        let mut meta_lock = self.metadata.write().expect("write lock");
+        *meta_lock = checkpoint;
+
+        // clear all staged changes
+        let mut staged_lock = self.staged.write().expect("write lock");
+        *staged_lock = Staged {
+            snapshot_version,
+            memory: BTreeMap::new(),
+        };
+    }
+
     pub fn inner(&mut self) -> anyhow::Result<&ReadTx> {
         {
             let rlock = self.staged.read().expect("acquire lock");
@@ -218,17 +241,20 @@ impl LiveSnapshot {
     }
 
     pub fn insert<K: KeyHash + Into<Hash>, T: Encode>(&self, key: K, value: T) {
-        let value = bincode::encode_to_vec(value, config::standard())
-            .expect("encodes value");
+        let value = bincode::encode_to_vec(value, config::standard()).expect("encodes value");
         self.insert_raw(key.into(), value);
     }
 
-    pub fn get<K: KeyHash + Into<Hash>, T: Decode>(&mut self, key: K) -> spacedb::Result<Option<T>> {
+    pub fn get<K: KeyHash + Into<Hash>, T: Decode>(
+        &mut self,
+        key: K,
+    ) -> spacedb::Result<Option<T>> {
         match self.get_raw(&key.into())? {
             Some(value) => {
                 let (decoded, _): (T, _) = bincode::decode_from_slice(&value, config::standard())
-                    .map_err(|e|
-                        spacedb::Error::IO(io::Error::new(ErrorKind::Other, e.to_string())))?;
+                    .map_err(|e| {
+                    spacedb::Error::IO(io::Error::new(ErrorKind::Other, e.to_string()))
+                })?;
                 Ok(Some(decoded))
             }
             None => Ok(None),
@@ -241,19 +267,28 @@ impl LiveSnapshot {
 
     #[inline]
     fn remove_raw(&self, key: &Hash) {
-        self.staged.write().expect("write lock").memory.insert(*key, None);
+        self.staged
+            .write()
+            .expect("write lock")
+            .memory
+            .insert(*key, None);
     }
 
     #[inline]
     fn insert_raw(&self, key: Hash, value: Vec<u8>) {
-        self.staged.write().expect("write lock").memory.insert(key, Some(value));
+        self.staged
+            .write()
+            .expect("write lock")
+            .memory
+            .insert(key, Some(value));
     }
 
     fn update_snapshot(&mut self, version: u32) -> anyhow::Result<()> {
         if self.snapshot.0 != version {
             self.snapshot.1 = self.db.begin_read()?;
-            let meta: StoreCheckpoint = self.snapshot.1.metadata().try_into()
-                .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "could not parse metdata"))?;
+            let meta: StoreCheckpoint = self.snapshot.1.metadata().try_into().map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::Other, "could not parse metdata")
+            })?;
 
             assert_eq!(version, meta.block_height, "inconsistent db state");
             self.snapshot.0 = version;
@@ -267,33 +302,37 @@ impl LiveSnapshot {
         if let Some(value) = rlock.memory.get(key) {
             return match value {
                 None => Ok(None),
-                Some(value) => {
-                    Ok(Some(value.clone()))
-                }
+                Some(value) => Ok(Some(value.clone())),
             };
         }
 
         let version = rlock.snapshot_version;
         drop(rlock);
 
-        self.update_snapshot(version).map_err(|error| spacedb::Error::IO(
-            std::io::Error::new(std::io::ErrorKind::Other, error)))?;
+        self.update_snapshot(version).map_err(|error| {
+            spacedb::Error::IO(std::io::Error::new(std::io::ErrorKind::Other, error))
+        })?;
         self.snapshot.1.get(key)
     }
 
     pub fn commit(&self, metadata: StoreCheckpoint, mut tx: WriteTx) -> Result<()> {
         let mut staged = self.staged.write().expect("write");
-        let changes = mem::replace(&mut *staged, Staged {
-            snapshot_version: metadata.block_height,
-            memory: BTreeMap::new(),
-        });
+        let changes = mem::replace(
+            &mut *staged,
+            Staged {
+                snapshot_version: metadata.block_height,
+                memory: BTreeMap::new(),
+            },
+        );
 
         for (key, value) in changes.memory {
             match value {
-                None => _ = {
-                    _ = tx.delete(key);
-                },
-                Some(value) => tx.insert(key, value)?,
+                None => {
+                    _ = {
+                        tx = tx.delete(key)?;
+                    }
+                }
+                Some(value) => tx = tx.insert(key, value)?,
             }
         }
 
@@ -306,31 +345,37 @@ impl LiveSnapshot {
     pub fn estimate_bid(&mut self, target: usize) -> anyhow::Result<u64> {
         let rollout = self.get_rollout(target)?;
         if rollout.is_empty() {
-            return Ok(0)
+            return Ok(0);
         }
-        let (priority,_) = rollout.last().unwrap();
+        let (priority, _) = rollout.last().unwrap();
         Ok(*priority as u64)
     }
 
     pub fn get_rollout(&mut self, target: usize) -> anyhow::Result<Vec<(u32, SpaceHash)>> {
         let skip = target * self.params.rollout_batch_size as usize;
-        let entries = self.get_rollout_entries(
-            Some(self.params.rollout_batch_size as usize), skip)?;
-
+        let entries =
+            self.get_rollout_entries(Some(self.params.rollout_batch_size as usize), skip)?;
 
         Ok(entries)
     }
 
-    pub fn get_rollout_entries(&mut self, limit: Option<usize>, skip: usize) -> anyhow::Result<Vec<(u32, SpaceHash)>> {
+    pub fn get_rollout_entries(
+        &mut self,
+        limit: Option<usize>,
+        skip: usize,
+    ) -> anyhow::Result<Vec<(u32, SpaceHash)>> {
         // TODO: this could use some clean up
         let rlock = self.staged.read().expect("acquire lock");
         let mut deleted = BTreeSet::new();
-        let memory: Vec<_> = rlock.memory
-            .iter().rev()
+        let memory: Vec<_> = rlock
+            .memory
+            .iter()
+            .rev()
             .filter_map(|(key, value)| {
                 if BidHash::is_valid(key) {
                     if value.is_some() {
-                        let spacehash = SpaceHash::from_slice_unchecked(value.as_ref().unwrap().as_slice());
+                        let spacehash =
+                            SpaceHash::from_slice_unchecked(value.as_ref().unwrap().as_slice());
                         Some((BidHash::from_slice_unchecked(key.as_slice()), spacehash))
                     } else {
                         deleted.insert(BidHash::from_slice_unchecked(key.as_slice()));
@@ -340,7 +385,8 @@ impl LiveSnapshot {
                     None
                 }
             })
-            .map(|x| Ok(x)).collect();
+            .map(|x| Ok(x))
+            .collect();
 
         drop(rlock);
 
@@ -352,38 +398,38 @@ impl LiveSnapshot {
         let merger = MergingIterator::new(memory.into_iter(), db);
         merger
             // skip deleted items
-            .filter_map(|x| {
-               match x.as_ref() {
-                   Ok((bid_hash, _))  => {
-                       if deleted.contains(bid_hash) {
-                           None
-                       } else {
-                           Some(x)
-                       }
-                   }
-                   _ => {
-                       None
-                   }
-               }
+            .filter_map(|x| match x.as_ref() {
+                Ok((bid_hash, _)) => {
+                    if deleted.contains(bid_hash) {
+                        None
+                    } else {
+                        Some(x)
+                    }
+                }
+                _ => None,
             })
-            .map(|result|
-                result.map(|(bidhash, spacehash)|
-                    (bidhash.priority(), spacehash)))
-
-            .skip(skip).take(limit.map_or(usize::MAX, |l| l)).collect()
+            .map(|result| result.map(|(bidhash, spacehash)| (bidhash.priority(), spacehash)))
+            .skip(skip)
+            .take(limit.map_or(usize::MAX, |l| l))
+            .collect()
     }
 }
 
 impl protocol::prepare::DataSource for LiveSnapshot {
-    fn get_space_outpoint(&mut self, space_hash: &protocol::hasher::SpaceHash) -> protocol::errors::Result<Option<OutPoint>> {
-        let result : Option<EncodableOutpoint> = self.get(*space_hash)
+    fn get_space_outpoint(
+        &mut self,
+        space_hash: &protocol::hasher::SpaceHash,
+    ) -> protocol::errors::Result<Option<OutPoint>> {
+        let result: Option<EncodableOutpoint> = self
+            .get(*space_hash)
             .map_err(|err| protocol::errors::Error::IO(err.to_string()))?;
         Ok(result.map(|out| out.into()))
     }
 
     fn get_spaceout(&mut self, outpoint: &OutPoint) -> protocol::errors::Result<Option<SpaceOut>> {
         let h = OutpointHash::from_outpoint::<Sha256>(*outpoint);
-        let result = self.get(h)
+        let result = self
+            .get(h)
             .map_err(|err| protocol::errors::Error::IO(err.to_string()))?;
         Ok(result)
     }
@@ -463,18 +509,18 @@ impl Iterator for KeyRolloutIterator {
 }
 
 struct MergingIterator<I1, I2>
-    where
-        I1: Iterator<Item=Result<(BidHash, SpaceHash)>>,
-        I2: Iterator<Item=Result<(BidHash, SpaceHash)>>,
+where
+    I1: Iterator<Item = Result<(BidHash, SpaceHash)>>,
+    I2: Iterator<Item = Result<(BidHash, SpaceHash)>>,
 {
     iter1: std::iter::Peekable<I1>,
     iter2: std::iter::Peekable<I2>,
 }
 
 impl<I1, I2> MergingIterator<I1, I2>
-    where
-        I1: Iterator<Item=Result<(BidHash, SpaceHash)>>,
-        I2: Iterator<Item=Result<(BidHash, SpaceHash)>>,
+where
+    I1: Iterator<Item = Result<(BidHash, SpaceHash)>>,
+    I2: Iterator<Item = Result<(BidHash, SpaceHash)>>,
 {
     fn new(iter1: I1, iter2: I2) -> Self {
         MergingIterator {
@@ -485,9 +531,9 @@ impl<I1, I2> MergingIterator<I1, I2>
 }
 
 impl<I1, I2> Iterator for MergingIterator<I1, I2>
-    where
-        I1: Iterator<Item=Result<(BidHash, SpaceHash)>>,
-        I2: Iterator<Item=Result<(BidHash, SpaceHash)>>,
+where
+    I1: Iterator<Item = Result<(BidHash, SpaceHash)>>,
+    I2: Iterator<Item = Result<(BidHash, SpaceHash)>>,
 {
     type Item = Result<(BidHash, SpaceHash)>;
 

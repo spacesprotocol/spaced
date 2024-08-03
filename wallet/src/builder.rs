@@ -1,25 +1,33 @@
-use std::cell::RefCell;
-use std::cmp::min;
-use std::collections::BTreeMap;
-use std::default::Default;
-use std::ops::{Add, Mul};
-use std::str::FromStr;
+use std::{
+    cell::RefCell,
+    cmp::min,
+    collections::BTreeMap,
+    default::Default,
+    ops::{Add, Mul},
+    str::FromStr,
+};
+
 use anyhow::{anyhow, Context};
-use bdk::{KeychainKind, TxBuilder, WeightedUtxo};
-use bdk::bitcoin::{Address, Amount, FeeRate, Network, OutPoint, psbt, Psbt, Script, ScriptBuf, Sequence, Transaction, Txid, TxOut, Witness};
-use bdk::bitcoin::absolute::LockTime;
-use bdk::bitcoin::psbt::{Input};
-use bdk::bitcoin::script::PushBytesBuf;
-use bdk::wallet::coin_selection::{CoinSelectionAlgorithm, CoinSelectionResult, DefaultCoinSelectionAlgorithm, Error};
-use bdk::wallet::tx_builder::{CreateTx, TxOrdering};
+use bdk_wallet::{
+    wallet::{
+        coin_selection::{
+            CoinSelectionAlgorithm, CoinSelectionResult, DefaultCoinSelectionAlgorithm, Error,
+        },
+        tx_builder::TxOrdering,
+    },
+    KeychainKind, TxBuilder, WeightedUtxo,
+};
+use bitcoin::{
+    absolute::LockTime, psbt, psbt::Input, script::PushBytesBuf, Address, Amount, FeeRate, Network,
+    OutPoint, Psbt, Script, ScriptBuf, Sequence, Transaction, TxOut, Txid, Witness,
+};
+use protocol::{
+    bitcoin::absolute::Height, opcodes::OP_OPEN, script::ScriptBuilder, sname::NameLike, Covenant,
+    FullSpaceOut, Space, BID_PSBT_INPUT_SEQUENCE, BID_PSBT_TX_VERSION,
+};
 use serde::{Deserialize, Serialize};
-use protocol::sname::{NameLike};
-use protocol::{BID_PSBT_INPUT_SEQUENCE, BID_PSBT_TX_VERSION, Covenant, FullSpaceOut, Space};
-use protocol::bitcoin::absolute::Height;
-use protocol::opcodes::OP_OPEN;
-use protocol::script::ScriptBuilder;
-use crate::{DoubleUtxo, FullTxOut, SpaceScriptSigningInfo, SuperWallet};
-use crate::address::SpaceAddress;
+
+use crate::{address::SpaceAddress, DoubleUtxo, FullTxOut, SpaceScriptSigningInfo, SpacesWallet};
 
 #[derive(Debug, Clone)]
 pub struct Builder {
@@ -44,10 +52,10 @@ pub struct BuilderIterator<'a> {
     stack: Vec<StackOp>,
     fee_rate: FeeRate,
     dust: Option<Amount>,
-    pub wallet: &'a mut SuperWallet,
+    pub wallet: &'a mut SpacesWallet,
     force: bool,
     median_time: u64,
-    coin_selection: SpacesAwareCoinSelection
+    coin_selection: SpacesAwareCoinSelection,
 }
 
 pub enum BuilderStack {
@@ -102,7 +110,7 @@ pub struct RegisterRequest {
 #[derive(Debug, Clone)]
 pub enum TransferRequest {
     Space(SpaceTransfer),
-    Coin(CoinTransfer)
+    Coin(CoinTransfer),
 }
 
 #[derive(Debug, Clone)]
@@ -142,16 +150,27 @@ pub struct BidRequest {
     amount: Amount,
 }
 
-trait TxBuilderSpacesUtils<'a, Cs: CoinSelectionAlgorithm, Ctx> {
+trait TxBuilderSpacesUtils<'a, Cs: CoinSelectionAlgorithm> {
     fn add_refund(&mut self, info: &FullSpaceOut) -> anyhow::Result<&mut Self>;
-    fn add_bid(&mut self, prev_space: Option<&Space>, offer: Psbt, placeholder: DoubleUtxo, amount: Amount, allow_unsafe: bool) -> anyhow::Result<&mut Self>;
+    fn add_bid(
+        &mut self,
+        prev_space: Option<&Space>,
+        offer: Psbt,
+        placeholder: DoubleUtxo,
+        amount: Amount,
+        allow_unsafe: bool,
+    ) -> anyhow::Result<&mut Self>;
 
-    fn add_reveal(&mut self, commitment: FullTxOut, signing: SpaceScriptSigningInfo) -> anyhow::Result<&mut Self>;
+    fn add_reveal(
+        &mut self,
+        commitment: FullTxOut,
+        signing: SpaceScriptSigningInfo,
+    ) -> anyhow::Result<&mut Self>;
 
     fn add_transfer(&mut self, request: TransferRequest) -> anyhow::Result<&mut Self>;
 }
 
-impl<'a, Cs: CoinSelectionAlgorithm> TxBuilderSpacesUtils<'a, Cs, CreateTx> for TxBuilder<'a, Cs, CreateTx> {
+impl<'a, Cs: CoinSelectionAlgorithm> TxBuilderSpacesUtils<'a, Cs> for TxBuilder<'a, Cs> {
     fn add_refund(&mut self, info: &FullSpaceOut) -> anyhow::Result<&mut Self> {
         let (input, txout) = match info.refund_psbt_data() {
             None => return Err(anyhow!("expected a space in the bidding process")),
@@ -160,31 +179,41 @@ impl<'a, Cs: CoinSelectionAlgorithm> TxBuilderSpacesUtils<'a, Cs, CreateTx> for 
 
         let tap_key_spend_weight = 66;
         self.version(BID_PSBT_TX_VERSION);
-        self.add_foreign_utxo_with_sequence(info.outpoint, input, tap_key_spend_weight, BID_PSBT_INPUT_SEQUENCE)?;
+        self.add_foreign_utxo_with_sequence(
+            info.outpoint,
+            input,
+            tap_key_spend_weight,
+            BID_PSBT_INPUT_SEQUENCE,
+        )?;
         self.add_recipient(txout.script_pubkey, txout.value);
 
         Ok(self)
     }
 
-    fn add_bid(&mut self, prev_space: Option<&Space>, offer: Psbt, placeholder: DoubleUtxo, amount: Amount, force: bool) -> anyhow::Result<&mut Self> {
+    fn add_bid(
+        &mut self,
+        prev_space: Option<&Space>,
+        offer: Psbt,
+        placeholder: DoubleUtxo,
+        amount: Amount,
+        force: bool,
+    ) -> anyhow::Result<&mut Self> {
         let burn_amount = match prev_space {
             None => amount,
-            Some(space) => {
-                match &space.covenant {
-                    Covenant::Bid { total_burned, .. } => {
-                        let min_bid = if force {
-                            *total_burned
-                        } else {
-                            total_burned.add(Amount::from_sat(1))
-                        };
-                        if amount < min_bid {
-                            return Err(anyhow!("Minimum bid is {} sats", min_bid.to_sat()));
-                        }
-                        amount - *total_burned
+            Some(space) => match &space.covenant {
+                Covenant::Bid { total_burned, .. } => {
+                    let min_bid = if force {
+                        *total_burned
+                    } else {
+                        total_burned.add(Amount::from_sat(1))
+                    };
+                    if amount < min_bid {
+                        return Err(anyhow!("Minimum bid is {} sats", min_bid.to_sat()));
                     }
-                    _ => return Err(anyhow!("Space not in auction"))
+                    amount - *total_burned
                 }
-            }
+                _ => return Err(anyhow!("Space not in auction")),
+            },
         };
 
         let mut spend_input = psbt::Input {
@@ -194,22 +223,34 @@ impl<'a, Cs: CoinSelectionAlgorithm> TxBuilderSpacesUtils<'a, Cs, CreateTx> for 
             proprietary: BTreeMap::new(),
             ..Default::default()
         };
-        spend_input.proprietary.insert(SuperWallet::spaces_signer("tbs"), Vec::new());
+        spend_input
+            .proprietary
+            .insert(SpacesWallet::spaces_signer("tbs"), Vec::new());
 
-        let compressed_psbt = PushBytesBuf::try_from(
-            SuperWallet::compress_bid_psbt(placeholder.auction.outpoint.vout as u8, &offer)?
-        ).expect("compressed psbt script bytes");
+        let compressed_psbt = PushBytesBuf::try_from(SpacesWallet::compress_bid_psbt(
+            placeholder.auction.outpoint.vout as u8,
+            &offer,
+        )?)
+        .expect("compressed psbt script bytes");
 
         let carrier = ScriptBuf::new_op_return(&compressed_psbt);
 
-        self.add_foreign_utxo_with_sequence(placeholder.spend.outpoint, spend_input, 66,
-                                            Sequence::ENABLE_RBF_NO_LOCKTIME)?;
+        self.add_foreign_utxo_with_sequence(
+            placeholder.spend.outpoint,
+            spend_input,
+            66,
+            Sequence::ENABLE_RBF_NO_LOCKTIME,
+        )?;
         self.add_recipient(carrier, burn_amount);
 
         Ok(self)
     }
 
-    fn add_reveal(&mut self, commitment: FullTxOut, signing_info: SpaceScriptSigningInfo) -> anyhow::Result<&mut Self> {
+    fn add_reveal(
+        &mut self,
+        commitment: FullTxOut,
+        signing_info: SpaceScriptSigningInfo,
+    ) -> anyhow::Result<&mut Self> {
         let mut psbt_input = Input {
             witness_utxo: Some(commitment.txout.clone()),
             // to be signed later
@@ -221,12 +262,16 @@ impl<'a, Cs: CoinSelectionAlgorithm> TxBuilderSpacesUtils<'a, Cs, CreateTx> for 
 
         // Used by the internal signer after the psbt is built
         psbt_input.proprietary.insert(
-            SuperWallet::spaces_signer("reveal_signing_info"),
+            SpacesWallet::spaces_signer("reveal_signing_info"),
             signing_info.to_vec(),
         );
 
-        self.add_foreign_utxo_with_sequence(commitment.outpoint, psbt_input, signing_info.satisfaction_weight(),
-        Sequence::ENABLE_RBF_NO_LOCKTIME)?;
+        self.add_foreign_utxo_with_sequence(
+            commitment.outpoint,
+            psbt_input,
+            signing_info.satisfaction_weight(),
+            Sequence::ENABLE_RBF_NO_LOCKTIME,
+        )?;
         Ok(self)
     }
 
@@ -243,9 +288,14 @@ impl<'a, Cs: CoinSelectionAlgorithm> TxBuilderSpacesUtils<'a, Cs, CreateTx> for 
                     proprietary: BTreeMap::new(),
                     ..Default::default()
                 };
-                spend_input.proprietary.insert(SuperWallet::spaces_signer("tbs"), Vec::new());
+                spend_input
+                    .proprietary
+                    .insert(SpacesWallet::spaces_signer("tbs"), Vec::new());
                 self.add_foreign_utxo(request.space.outpoint, spend_input, 66)?;
-                self.add_recipient(request.recipient.script_pubkey(), request.space.spaceout.value);
+                self.add_recipient(
+                    request.recipient.script_pubkey(),
+                    request.space.spaceout.value,
+                );
             }
             TransferRequest::Coin(request) => {
                 self.add_recipient(request.recipient.script_pubkey(), request.amount);
@@ -254,30 +304,29 @@ impl<'a, Cs: CoinSelectionAlgorithm> TxBuilderSpacesUtils<'a, Cs, CreateTx> for 
 
         Ok(self)
     }
-
 }
 
 impl Builder {
     fn prepare_all(
         coin_selection: SpacesAwareCoinSelection,
         median_time: u64,
-        w: &mut SuperWallet,
+        w: &mut SpacesWallet,
         auction_outputs: Option<u8>,
         reveals: Option<&Vec<SpaceScriptSigningInfo>>,
         space_transfers: Vec<SpaceTransfer>,
         coin_transfers: Vec<CoinTransfer>,
         fee_rate: FeeRate,
-        dust: Option<Amount>
+        dust: Option<Amount>,
     ) -> anyhow::Result<(Transaction, Vec<FullTxOut>)> {
         let mut vout: u32 = 0;
         let mut tap_outputs = Vec::new();
-        let change_address = w.coins.next_unused_address(KeychainKind::Internal)?
+        let change_address = w
+            .coins
+            .next_unused_address(KeychainKind::Internal)
             .script_pubkey();
 
         let commit_psbt = {
-            let mut builder =
-                w.coins.build_tx()
-                    .coin_selection(coin_selection);
+            let mut builder = w.coins.build_tx().coin_selection(coin_selection);
             builder.nlocktime(magic_lock_time(median_time));
 
             builder.ordering(TxOrdering::Untouched);
@@ -287,17 +336,20 @@ impl Builder {
                     // one is spent in an auction.
 
                     // pointer/spend output
-                    let addr1 = w.spaces.next_unused_address(KeychainKind::Internal)?.script_pubkey();
+                    let addr1 = w
+                        .spaces
+                        .next_unused_address(KeychainKind::Internal)
+                        .script_pubkey();
                     let dust = match dust {
-                        None => addr1.dust_value().mul(2),
-                        Some(dust) => dust
+                        None => addr1.minimal_non_dust().mul(2),
+                        Some(dust) => dust,
                     };
                     let magic_dust = magic_dust(dust);
 
                     builder.add_recipient(addr1, dust);
 
                     // auctioned output
-                    let addr2 = w.spaces.next_unused_address(KeychainKind::External)?;
+                    let addr2 = w.spaces.next_unused_address(KeychainKind::External);
                     builder.add_recipient(addr2.script_pubkey(), magic_dust);
 
                     vout += 2;
@@ -307,16 +359,12 @@ impl Builder {
             if let Some(tap_data) = reveals {
                 for tap_item in tap_data {
                     let dust = match dust {
-                        None => tap_item.tweaked_address.dust_value().mul(2),
-                        Some(dust) => dust
+                        None => tap_item.tweaked_address.minimal_non_dust().mul(2),
+                        Some(dust) => dust,
                     };
                     let magic_dust = magic_dust(dust);
 
-                    builder
-                        .add_recipient(
-                            tap_item.tweaked_address.clone(),
-                            magic_dust,
-                        );
+                    builder.add_recipient(tap_item.tweaked_address.clone(), magic_dust);
                     tap_outputs.push(vout);
                     vout += 1;
                 }
@@ -336,8 +384,8 @@ impl Builder {
                 // TODO: use the actual change output instead of creating this
                 if vout % 2 == 0 {
                     let dust = match dust {
-                        None => change_address.dust_value().mul(2),
-                        Some(dust) => dust
+                        None => change_address.minimal_non_dust().mul(2),
+                        Some(dust) => dust,
                     };
                     builder.add_recipient(change_address, dust);
                 }
@@ -352,14 +400,14 @@ impl Builder {
         };
 
         let tx = w.sign(commit_psbt, None)?;
-        let txid = tx.txid();
-        let commitments = tap_outputs.into_iter().map(|vout| FullTxOut {
-            outpoint: OutPoint {
-                txid,
-                vout,
-            },
-            txout: tx.output[vout as usize].clone(),
-        }).collect();
+        let txid = tx.compute_txid();
+        let commitments = tap_outputs
+            .into_iter()
+            .map(|vout| FullTxOut {
+                outpoint: OutPoint { txid, vout },
+                txout: tx.output[vout as usize].clone(),
+            })
+            .collect();
 
         Ok((tx, commitments))
     }
@@ -367,7 +415,7 @@ impl Builder {
 
 pub struct TaggedTransaction {
     pub tx: Transaction,
-    pub tags: Vec<TransactionTag>
+    pub tags: Vec<TransactionTag>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
@@ -379,7 +427,7 @@ pub enum TransactionTag {
     Transfers,
     Open,
     Bid,
-    Script
+    Script,
 }
 
 impl Iterator for BuilderIterator<'_> {
@@ -400,19 +448,15 @@ impl Iterator for BuilderIterator<'_> {
                 if params.auction_outputs.is_some() {
                     tags.push(TransactionTag::AuctionOutputs);
                 }
-                if !params.opens.is_empty() || !params.executes.is_empty()  {
+                if !params.opens.is_empty() || !params.executes.is_empty() {
                     tags.push(TransactionTag::Commitment);
                 }
 
-                let mut reveals = Vec::with_capacity(
-                    params.opens.len() + params.executes.len()
-                );
+                let mut reveals = Vec::with_capacity(params.opens.len() + params.executes.len());
                 let mut amounts = Vec::with_capacity(params.opens.len());
 
                 for req in params.opens {
-                    let tap = Builder::create_open_tap_data(
-                        self.wallet.network, &req.name
-                    )
+                    let tap = Builder::create_open_tap_data(self.wallet.network, &req.name)
                         .context("could not initialize tap data for name");
                     if tap.is_err() {
                         return Some(Err(tap.unwrap_err()));
@@ -440,14 +484,22 @@ impl Iterator for BuilderIterator<'_> {
                     self.wallet,
                     params.auction_outputs,
                     Some(&reveals),
-                    params.transfers.iter().filter_map(|req| match req {
-                        TransferRequest::Space(transfer) => Some(transfer.clone()),
-                        _ => None,
-                    }).collect(),
-                    params.transfers.iter().filter_map(|req| match req {
-                        TransferRequest::Coin(transfer) => Some(transfer.clone()),
-                        _ => None,
-                    }).collect(),
+                    params
+                        .transfers
+                        .iter()
+                        .filter_map(|req| match req {
+                            TransferRequest::Space(transfer) => Some(transfer.clone()),
+                            _ => None,
+                        })
+                        .collect(),
+                    params
+                        .transfers
+                        .iter()
+                        .filter_map(|req| match req {
+                            TransferRequest::Coin(transfer) => Some(transfer.clone()),
+                            _ => None,
+                        })
+                        .collect(),
                     self.fee_rate,
                     self.dust,
                 );
@@ -460,13 +512,20 @@ impl Iterator for BuilderIterator<'_> {
                 let mut reveals_iter = reveals.into_iter();
                 let mut commitments_iter = commitments.into_iter();
 
-                let open_reveals = reveals_iter.by_ref()
-                    .take(amounts.len()).collect::<Vec<SpaceScriptSigningInfo>>().into_iter();
-                let open_commitments = commitments_iter.by_ref().take(amounts.len())
-                    .collect::<Vec<FullTxOut>>().into_iter();
+                let open_reveals = reveals_iter
+                    .by_ref()
+                    .take(amounts.len())
+                    .collect::<Vec<SpaceScriptSigningInfo>>()
+                    .into_iter();
+                let open_commitments = commitments_iter
+                    .by_ref()
+                    .take(amounts.len())
+                    .collect::<Vec<FullTxOut>>()
+                    .into_iter();
 
                 for ((signing, commitment), amount) in
-                open_reveals.zip(open_commitments).zip(amounts) {
+                    open_reveals.zip(open_commitments).zip(amounts)
+                {
                     self.stack.push(StackOp::Open(OpenParams {
                         reveals: vec![SpaceScriptRevealParams {
                             signing: signing.clone(),
@@ -477,7 +536,8 @@ impl Iterator for BuilderIterator<'_> {
                 }
 
                 for ((signing, commitment), context) in
-                reveals_iter.zip(commitments_iter).zip(contexts) {
+                    reveals_iter.zip(commitments_iter).zip(contexts)
+                {
                     self.stack.push(StackOp::Execute(ExecuteParams {
                         reveal: SpaceScriptRevealParams {
                             signing,
@@ -487,10 +547,7 @@ impl Iterator for BuilderIterator<'_> {
                     }))
                 }
 
-                Some(Ok(TaggedTransaction {
-                    tx,
-                    tags,
-                }))
+                Some(Ok(TaggedTransaction { tx, tags }))
             }
             StackOp::Open(params) => {
                 let tx = Builder::open_tx(
@@ -562,10 +619,8 @@ impl Builder {
     }
 
     pub fn add_bid(mut self, space: FullSpaceOut, amount: Amount) -> Self {
-        self.requests.push(StackRequest::Bid(BidRequest {
-            space,
-            amount,
-        }));
+        self.requests
+            .push(StackRequest::Bid(BidRequest { space, amount }));
         self
     }
 
@@ -578,10 +633,8 @@ impl Builder {
     }
 
     pub fn add_register(mut self, space: FullSpaceOut, to: Option<SpaceAddress>) -> Self {
-        self.requests.push(StackRequest::Register(RegisterRequest {
-            space,
-            to,
-        }));
+        self.requests
+            .push(StackRequest::Register(RegisterRequest { space, to }));
         self
     }
 
@@ -598,22 +651,33 @@ impl Builder {
         self
     }
 
-    pub fn build_iter(self, dust: Option<Amount>, median_time: u64, wallet: &mut SuperWallet, coin_selection: SpacesAwareCoinSelection) -> anyhow::Result<BuilderIterator> {
-        let fee_rate = self.fee_rate.as_ref().ok_or_else(||
-            anyhow::anyhow!("fee_rate is required"))?.clone();
+    pub fn build_iter(
+        self,
+        dust: Option<Amount>,
+        median_time: u64,
+        wallet: &mut SpacesWallet,
+        coin_selection: SpacesAwareCoinSelection,
+    ) -> anyhow::Result<BuilderIterator> {
+        let fee_rate = self
+            .fee_rate
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("fee_rate is required"))?
+            .clone();
 
-        let (open_count, bid_count) = self.requests.iter()
-            .fold((0, 0), |mut counts, req| match req {
-                StackRequest::Open(_) => {
-                    counts.0 += 1;
-                    counts
-                }
-                StackRequest::Bid(_) => {
-                    counts.1 += 1;
-                    counts
-                }
-                _ => counts,
-            });
+        let (open_count, bid_count) =
+            self.requests
+                .iter()
+                .fold((0, 0), |mut counts, req| match req {
+                    StackRequest::Open(_) => {
+                        counts.0 += 1;
+                        counts
+                    }
+                    StackRequest::Bid(_) => {
+                        counts.1 += 1;
+                        counts
+                    }
+                    _ => counts,
+                });
 
         let required_auction_outputs = open_count + bid_count as u8;
         let available = if required_auction_outputs > 0 {
@@ -624,16 +688,22 @@ impl Builder {
 
         // check how many bid outputs we need to create
         let auction_outputs = match self.auction_outputs {
-            None => if required_auction_outputs > available.len() as u8 {
-                Some(required_auction_outputs - available.len() as u8)
-            } else {
-                None
+            None => {
+                if required_auction_outputs > available.len() as u8 {
+                    Some(required_auction_outputs - available.len() as u8)
+                } else {
+                    None
+                }
             }
             Some(count) => {
-                if required_auction_outputs > available.len() as u8 + count  {
-                    return Err(anyhow!("number of required placeholders {} \
+                if required_auction_outputs > available.len() as u8 + count {
+                    return Err(anyhow!(
+                        "number of required placeholders {} \
                     exceeds currently available {} + requested {}",
-                        required_auction_outputs, available.len(), count));
+                        required_auction_outputs,
+                        available.len(),
+                        count
+                    ));
                 }
                 Some(count)
             }
@@ -650,20 +720,17 @@ impl Builder {
                 StackRequest::Open(params) => opens.push(params),
                 StackRequest::Bid(params) => bids.push(params),
                 StackRequest::Register(params) => {
-
                     let to = match params.to {
-                        None => {
-                            wallet.next_unused_space_address()?
-                        }
-                        Some(address) => address
+                        None => wallet.next_unused_space_address(),
+                        Some(address) => address,
                     };
                     transfers.push(TransferRequest::Space(SpaceTransfer {
                         space: params.space,
-                        recipient: to.0
+                        recipient: to.0,
                     }))
                 }
                 StackRequest::Transfer(params) => transfers.push(params),
-                StackRequest::Execute(params) => executes.push(params)
+                StackRequest::Execute(params) => executes.push(params),
             }
         }
 
@@ -672,7 +739,11 @@ impl Builder {
                 stack.push(StackOp::Bid(bid))
             }
         }
-        if !opens.is_empty()  || !transfers.is_empty() || !executes.is_empty() || auction_outputs.is_some() {
+        if !opens.is_empty()
+            || !transfers.is_empty()
+            || !executes.is_empty()
+            || auction_outputs.is_some()
+        {
             stack.push(StackOp::Prepare(CreateParams {
                 opens,
                 executes,
@@ -688,22 +759,32 @@ impl Builder {
             wallet,
             force: self.force,
             median_time,
-            coin_selection
+            coin_selection,
         })
     }
 
-    fn bid_tx(coin_selection: SpacesAwareCoinSelection, w: &mut SuperWallet, prev: FullSpaceOut, bid: Amount, fee_rate: FeeRate, force: bool)
-              -> anyhow::Result<Transaction> {
-
+    fn bid_tx(
+        coin_selection: SpacesAwareCoinSelection,
+        w: &mut SpacesWallet,
+        prev: FullSpaceOut,
+        bid: Amount,
+        fee_rate: FeeRate,
+        force: bool,
+    ) -> anyhow::Result<Transaction> {
         let (offer, placeholder) = w.new_bid_psbt(bid)?;
         let bid_psbt = {
-            let mut builder = w.coins.build_tx()
-                .coin_selection(coin_selection);
+            let mut builder = w.coins.build_tx().coin_selection(coin_selection);
             builder
                 .ordering(TxOrdering::Untouched)
                 .nlocktime(LockTime::Blocks(Height::ZERO))
                 .enable_rbf_with_sequence(BID_PSBT_INPUT_SEQUENCE)
-                .add_bid(Some(prev.spaceout.space.as_ref().unwrap()), offer, placeholder, bid, force)?
+                .add_bid(
+                    Some(prev.spaceout.space.as_ref().unwrap()),
+                    offer,
+                    placeholder,
+                    bid,
+                    force,
+                )?
                 .add_refund(&prev)?
                 .fee_rate(fee_rate);
             builder.finish()?
@@ -713,27 +794,31 @@ impl Builder {
         Ok(signed)
     }
 
-    fn open_tx(coin_selection: SpacesAwareCoinSelection, w: &mut SuperWallet, params: OpenParams, fee_rate: FeeRate, force: bool)
-               -> anyhow::Result<Transaction> {
-
+    fn open_tx(
+        coin_selection: SpacesAwareCoinSelection,
+        w: &mut SpacesWallet,
+        params: OpenParams,
+        fee_rate: FeeRate,
+        force: bool,
+    ) -> anyhow::Result<Transaction> {
         let (offer, placeholder) = w.new_bid_psbt(params.amount)?;
         let mut extra_prevouts = BTreeMap::new();
         let open_psbt = {
-            let mut builder = w.coins.build_tx()
-                .coin_selection(coin_selection);
-            builder
-                .ordering(TxOrdering::Untouched)
-                .add_bid(None, offer, placeholder, params.amount, force)?;
+            let mut builder = w.coins.build_tx().coin_selection(coin_selection);
+            builder.ordering(TxOrdering::Untouched).add_bid(
+                None,
+                offer,
+                placeholder,
+                params.amount,
+                force,
+            )?;
 
             for reveal in params.reveals {
-                builder
-                    .add_reveal(reveal.commitment.clone(), reveal.signing)?;
+                builder.add_reveal(reveal.commitment.clone(), reveal.signing)?;
                 extra_prevouts.insert(reveal.commitment.outpoint, reveal.commitment.txout);
             }
 
-            builder
-                .enable_rbf()
-                .fee_rate(fee_rate);
+            builder.enable_rbf().fee_rate(fee_rate);
             builder.finish()?
         };
 
@@ -741,21 +826,30 @@ impl Builder {
         Ok(signed)
     }
 
-    fn execute_tx(coin_selection: SpacesAwareCoinSelection, w: &mut SuperWallet, params: ExecuteParams, fee_rate: FeeRate, _force: bool)
-                  -> anyhow::Result<Transaction> {
+    fn execute_tx(
+        coin_selection: SpacesAwareCoinSelection,
+        w: &mut SpacesWallet,
+        params: ExecuteParams,
+        fee_rate: FeeRate,
+        _force: bool,
+    ) -> anyhow::Result<Transaction> {
         let mut extra_prevouts = BTreeMap::new();
         let reveal_psbt = {
-            let change_address = w.coins.next_unused_address(KeychainKind::Internal)?
+            let change_address = w
+                .coins
+                .next_unused_address(KeychainKind::Internal)
                 .script_pubkey();
-            let mut builder = w.coins.build_tx()
-                .coin_selection(coin_selection);
+            let mut builder = w.coins.build_tx().coin_selection(coin_selection);
 
             builder
                 .ordering(TxOrdering::Untouched)
                 // Added first to keep an odd number of outputs before adding transfers
                 .add_recipient(change_address, Amount::from_sat(1000));
 
-            extra_prevouts.insert(params.reveal.commitment.outpoint, params.reveal.commitment.txout.clone());
+            extra_prevouts.insert(
+                params.reveal.commitment.outpoint,
+                params.reveal.commitment.txout.clone(),
+            );
 
             for transfer in params.context {
                 builder.add_transfer(TransferRequest::Space(transfer))?;
@@ -773,7 +867,10 @@ impl Builder {
         Ok(signed)
     }
 
-    fn create_open_tap_data(network: Network, name: &str) -> anyhow::Result<SpaceScriptSigningInfo> {
+    fn create_open_tap_data(
+        network: Network,
+        name: &str,
+    ) -> anyhow::Result<SpaceScriptSigningInfo> {
         let space_builder = ScriptBuilder::new();
         let sname = protocol::sname::SName::from_str(name).expect("valid space name");
 
@@ -786,7 +883,6 @@ impl Builder {
     }
 }
 
-
 /// A coin selection algorithm that guarantees required utxos are ordered first
 /// appends any funding/change outputs to the end of the selected utxos
 /// also enables adding additional optional foreign utxos for funding
@@ -794,7 +890,7 @@ impl Builder {
 pub struct SpacesAwareCoinSelection {
     pub default_algorithm: DefaultCoinSelectionAlgorithm,
     // Additional UTXOs to fund the transaction
-    pub other_optional_utxos: RefCell<Vec<WeightedUtxo>>
+    pub other_optional_utxos: RefCell<Vec<WeightedUtxo>>,
 }
 
 impl SpacesAwareCoinSelection {
@@ -807,14 +903,18 @@ impl SpacesAwareCoinSelection {
 }
 
 impl CoinSelectionAlgorithm for SpacesAwareCoinSelection {
-    fn coin_select(&self,
-                   required_utxos: Vec<WeightedUtxo>,
-                   mut optional_utxos: Vec<WeightedUtxo>,
-                   fee_rate: FeeRate,
-                   target_amount: u64,
-                   drain_script: &Script) -> Result<CoinSelectionResult, Error> {
-        let required =
-            required_utxos.iter().map(|w| w.utxo.clone()).collect::<Vec<_>>();
+    fn coin_select(
+        &self,
+        required_utxos: Vec<WeightedUtxo>,
+        mut optional_utxos: Vec<WeightedUtxo>,
+        fee_rate: FeeRate,
+        target_amount: u64,
+        drain_script: &Script,
+    ) -> Result<CoinSelectionResult, Error> {
+        let required = required_utxos
+            .iter()
+            .map(|w| w.utxo.clone())
+            .collect::<Vec<_>>();
 
         optional_utxos.extend(self.other_optional_utxos.borrow().iter().cloned());
         let mut result = self.default_algorithm.coin_select(
@@ -828,7 +928,9 @@ impl CoinSelectionAlgorithm for SpacesAwareCoinSelection {
         let mut optional = Vec::with_capacity(result.selected.len() - required.len());
         for utxo in result.selected.drain(..) {
             if !required.iter().any(|u| u == &utxo) {
-                self.other_optional_utxos.borrow_mut().retain(|x| x.utxo != utxo);
+                self.other_optional_utxos
+                    .borrow_mut()
+                    .retain(|x| x.utxo != utxo);
                 optional.push(utxo);
             }
         }

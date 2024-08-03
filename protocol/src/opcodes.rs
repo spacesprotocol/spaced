@@ -5,7 +5,7 @@ pub struct SpaceOpcode {
 
 impl From<u8> for SpaceOpcode {
     fn from(value: u8) -> Self {
-        return SpaceOpcode {code: value}
+        return SpaceOpcode { code: value };
     }
 }
 

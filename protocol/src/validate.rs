@@ -1,19 +1,20 @@
-use alloc::vec::{Vec};
+use alloc::vec::Vec;
 use std::collections::BTreeMap;
 
 #[cfg(feature = "bincode")]
 use bincode::{Decode, Encode};
-
+use bitcoin::{absolute, transaction::Version, Amount, OutPoint, Transaction, TxIn, TxOut, Txid};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use bitcoin::{absolute, Amount, OutPoint, Transaction, Txid, TxIn, TxOut};
-use bitcoin::transaction::Version;
-
-use crate::{Params, Covenant, RevokeReason, SpaceOut, Space, BidPsbtReason, RejectReason, FullSpaceOut};
-use crate::prepare::{AuctionedOutput, FullTxIn, is_magic_lock_time, PreparedTransaction, SSTXO, TrackableOutput};
-use crate::script::{OpOpenContext, ScriptError, SpaceKind};
-use crate::sname::{SName};
+use crate::{
+    prepare::{
+        is_magic_lock_time, AuctionedOutput, FullTxIn, PreparedTransaction, TrackableOutput, SSTXO,
+    },
+    script::{OpOpenContext, ScriptError, SpaceKind},
+    sname::SName,
+    BidPsbtReason, Covenant, FullSpaceOut, Params, RejectReason, RevokeReason, Space, SpaceOut,
+};
 
 #[derive(Debug, Clone)]
 pub struct Validator {
@@ -53,10 +54,7 @@ pub struct ValidatedTransaction {
 #[cfg_attr(feature = "serde", serde(untagged))]
 pub enum TxInKind {
     #[cfg_attr(feature = "serde", serde(rename = "coinout"))]
-    CoinIn(
-        #[cfg_attr(feature = "bincode", bincode(with_serde))]
-        TxIn
-    ),
+    CoinIn(#[cfg_attr(feature = "bincode", bincode(with_serde))] TxIn),
     #[cfg_attr(feature = "serde", serde(rename = "spaceout"))]
     SpaceIn(SpaceIn),
 }
@@ -68,7 +66,7 @@ pub struct SpaceIn {
     #[cfg_attr(feature = "bincode", bincode(with_serde))]
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub txin: TxIn,
-    pub script_error: Option<ScriptError>
+    pub script_error: Option<ScriptError>,
 }
 
 #[derive(Clone, Debug)]
@@ -76,10 +74,7 @@ pub struct SpaceIn {
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[cfg_attr(feature = "serde", serde(untagged))]
 pub enum TxOutKind {
-    CoinOut(
-        #[cfg_attr(feature = "bincode", bincode(with_serde))]
-        TxOut
-    ),
+    CoinOut(#[cfg_attr(feature = "bincode", bincode(with_serde))] TxOut),
     SpaceOut(SpaceOut),
 }
 
@@ -146,9 +141,7 @@ pub struct EventOutput {
 
 impl Validator {
     pub fn new(config: Params) -> Validator {
-        Validator {
-            params: config,
-        }
+        Validator { params: config }
     }
 
     pub fn process(&self, height: u32, mut tx: PreparedTransaction) -> ValidatedTransaction {
@@ -162,7 +155,11 @@ impl Validator {
             version: tx.version,
             lock_time: tx.lock_time,
             input: Vec::with_capacity(tx.inputs.len()),
-            output: tx.outputs.into_iter().map(|out| TxOutKind::CoinOut(out)).collect(),
+            output: tx
+                .outputs
+                .into_iter()
+                .map(|out| TxOutKind::CoinOut(out))
+                .collect(),
             meta_output: vec![],
         };
 
@@ -186,7 +183,7 @@ impl Validator {
                         spacein.input,
                         input_index as u32,
                         spacein.sstxo,
-                        &mut changeset
+                        &mut changeset,
                     );
 
                     // Process any space scripts
@@ -195,7 +192,7 @@ impl Validator {
                             match &mut changeset.input.last_mut().unwrap() {
                                 TxInKind::CoinIn(_) => {
                                     // Do nothing
-                                },
+                                }
                                 TxInKind::SpaceIn(spacein) => {
                                     spacein.script_error = Some(script.unwrap_err());
                                 }
@@ -208,7 +205,7 @@ impl Validator {
                                         height,
                                         open,
                                         &mut tx.auctioned_output,
-                                        &mut changeset
+                                        &mut changeset,
                                     );
                                 }
                                 if let Some(data) = script.default_sdata {
@@ -220,7 +217,6 @@ impl Validator {
                                 reserve = true;
                             }
                         }
-
                     }
                 }
                 FullTxIn::CoinIn(coinin) => {
@@ -242,7 +238,7 @@ impl Validator {
                             }
                         }
                     }
-                    TxOutKind::CoinOut(_)   => {
+                    TxOutKind::CoinOut(_) => {
                         // do nothing
                     }
                 }
@@ -251,53 +247,41 @@ impl Validator {
 
         // Set default space data if any
         if !default_space_data.is_empty() {
-            changeset.output.iter_mut().for_each(|output| {
-              match output {
-                  TxOutKind::SpaceOut(spaceout) => {
-                      match spaceout.space.as_mut() {
-                          None => {}
-                          Some(space) => {
-                              match &mut space.covenant {
-                                  Covenant::Transfer { data, .. } => {
-                                      *data = Some(default_space_data.clone());
-                                  }
-                                  _ => {}
-                              }
-                          }
-                      }
-                  }
-                  _ => {}
-              }
+            changeset.output.iter_mut().for_each(|output| match output {
+                TxOutKind::SpaceOut(spaceout) => match spaceout.space.as_mut() {
+                    None => {}
+                    Some(space) => match &mut space.covenant {
+                        Covenant::Transfer { data, .. } => {
+                            *data = Some(default_space_data.clone());
+                        }
+                        _ => {}
+                    },
+                },
+                _ => {}
             });
         }
 
         // Set space specific data
         if !space_data.is_empty() {
-           for (key, value) in space_data.into_iter() {
-               match changeset.output.get_mut(key as usize) {
-                   None => {
-                       // do nothing
-                   }
-                   Some(output) => {
-                       match output {
-                           TxOutKind::SpaceOut(spaceout) => {
-                               match spaceout.space.as_mut() {
-                                   None => {}
-                                   Some(space) => {
-                                       match &mut space.covenant {
-                                           Covenant::Transfer { data, .. } => {
-                                               *data = Some(value);
-                                           }
-                                           _ => {}
-                                       }
-                                   }
-                               }
-                           },
-                           _ => {}
-                       }
-                   }
-               }
-           }
+            for (key, value) in space_data.into_iter() {
+                match changeset.output.get_mut(key as usize) {
+                    None => {
+                        // do nothing
+                    }
+                    Some(output) => match output {
+                        TxOutKind::SpaceOut(spaceout) => match spaceout.space.as_mut() {
+                            None => {}
+                            Some(space) => match &mut space.covenant {
+                                Covenant::Transfer { data, .. } => {
+                                    *data = Some(value);
+                                }
+                                _ => {}
+                            },
+                        },
+                        _ => {}
+                    },
+                }
+            }
         }
 
         // Check if any outputs should be tracked
@@ -321,16 +305,32 @@ impl Validator {
         changeset
     }
 
-    pub fn rollout(&self, height: u32, coinbase: Transaction, entries: Vec<FullSpaceOut>) -> ValidatedTransaction {
+    pub fn rollout(
+        &self,
+        height: u32,
+        coinbase: Transaction,
+        entries: Vec<FullSpaceOut>,
+    ) -> ValidatedTransaction {
         assert!(coinbase.is_coinbase(), "expected a coinbase tx");
-        assert!(entries.len() <= self.params.rollout_batch_size as usize, "bad rollout size");
+        assert!(
+            entries.len() <= self.params.rollout_batch_size as usize,
+            "bad rollout size"
+        );
 
         let mut tx = ValidatedTransaction {
             version: coinbase.version,
-            txid: coinbase.txid(),
+            txid: coinbase.compute_txid(),
             lock_time: coinbase.lock_time,
-            input: coinbase.input.into_iter().map(|input| TxInKind::CoinIn(input)).collect(),
-            output: coinbase.output.into_iter().map(|out| TxOutKind::CoinOut(out)).collect(),
+            input: coinbase
+                .input
+                .into_iter()
+                .map(|input| TxInKind::CoinIn(input))
+                .collect(),
+            output: coinbase
+                .output
+                .into_iter()
+                .map(|out| TxOutKind::CoinOut(out))
+                .collect(),
             meta_output: vec![],
         };
 
@@ -338,7 +338,16 @@ impl Validator {
             let space_ref = entry.spaceout.space.as_mut().expect("space");
 
             let rollout_bid = match &mut space_ref.covenant {
-                Covenant::Bid { total_burned, claim_height, .. } => {
+                Covenant::Bid {
+                    total_burned,
+                    claim_height,
+                    ..
+                } => {
+                    assert!(
+                        claim_height.is_none(),
+                        "space {} is already rolled out",
+                        space_ref.name
+                    );
                     *claim_height = Some(height + self.params.auction_block_interval as u32);
                     *total_burned
                 }
@@ -362,11 +371,14 @@ impl Validator {
     // accordingly
     #[inline]
     fn clear_auctioned_spent(tx: &mut PreparedTransaction) {
-        if let Some(auctioned) = tx.auctioned_output.as_ref()
-            .and_then(|out| Some(out.bid_psbt.outpoint)) {
+        if let Some(auctioned) = tx
+            .auctioned_output
+            .as_ref()
+            .and_then(|out| Some(out.bid_psbt.outpoint))
+        {
             if tx.inputs.iter().any(|input| match input {
                 FullTxIn::FullSpaceIn(prev) => prev.input.previous_output == auctioned,
-                FullTxIn::CoinIn(prev) => prev.previous_output == auctioned
+                FullTxIn::CoinIn(prev) => prev.previous_output == auctioned,
             }) {
                 tx.auctioned_output.as_mut().unwrap().output = None;
             }
@@ -380,26 +392,29 @@ impl Validator {
         auctiond: &mut Option<AuctionedOutput>,
         changeset: &mut ValidatedTransaction,
     ) {
-
         let name = match open.spaceout {
             SpaceKind::ExistingSpace(mut prev) => {
                 let prev_space = prev.spaceout.space.as_mut().unwrap();
                 if !prev_space.is_expired(height) {
-                    changeset.meta_output.push(MetaOutKind::ErrorOut(ErrorOut::Reject(RejectParams {
-                        name: prev.spaceout.space.unwrap().name,
-                        reason: RejectReason::AlreadyExists,
-                    })));
+                    changeset
+                        .meta_output
+                        .push(MetaOutKind::ErrorOut(ErrorOut::Reject(RejectParams {
+                            name: prev.spaceout.space.unwrap().name,
+                            reason: RejectReason::AlreadyExists,
+                        })));
                     return;
                 }
 
                 // Revoke the previously expired space
-                changeset.meta_output.push(MetaOutKind::ErrorOut(ErrorOut::Revoke(RevokeParams {
-                    spaceout: FullSpaceOut {
-                        outpoint: prev.outpoint,
-                        spaceout: prev.spaceout.clone(),
-                    },
-                    reason: RevokeReason::Expired,
-                })));
+                changeset
+                    .meta_output
+                    .push(MetaOutKind::ErrorOut(ErrorOut::Revoke(RevokeParams {
+                        spaceout: FullSpaceOut {
+                            outpoint: prev.outpoint,
+                            spaceout: prev.spaceout.clone(),
+                        },
+                        reason: RevokeReason::Expired,
+                    })));
                 prev.spaceout.space.unwrap().name
             }
             SpaceKind::NewSpace(name) => name,
@@ -407,20 +422,24 @@ impl Validator {
 
         let mut auctiond = match auctiond.take() {
             None => {
-                changeset.meta_output.push(MetaOutKind::ErrorOut(ErrorOut::Reject(RejectParams {
-                    name,
-                    reason: RejectReason::BidPSBT(BidPsbtReason::Required),
-                })));
+                changeset
+                    .meta_output
+                    .push(MetaOutKind::ErrorOut(ErrorOut::Reject(RejectParams {
+                        name,
+                        reason: RejectReason::BidPSBT(BidPsbtReason::Required),
+                    })));
                 return;
             }
-            Some(auctiond) => auctiond
+            Some(auctiond) => auctiond,
         };
 
         if auctiond.output.is_none() {
-            changeset.meta_output.push(MetaOutKind::ErrorOut(ErrorOut::Reject(RejectParams {
-                name,
-                reason: RejectReason::BidPSBT(BidPsbtReason::OutputSpent),
-            })));
+            changeset
+                .meta_output
+                .push(MetaOutKind::ErrorOut(ErrorOut::Reject(RejectParams {
+                    name,
+                    reason: RejectReason::BidPSBT(BidPsbtReason::OutputSpent),
+                })));
             return;
         }
 
@@ -445,33 +464,42 @@ impl Validator {
         };
 
         if !fullspaceout.verify_bid_sig() {
-            changeset.meta_output.push(MetaOutKind::ErrorOut(ErrorOut::Reject(RejectParams {
-                name: fullspaceout.spaceout.space.unwrap().name,
-                reason: RejectReason::BidPSBT(BidPsbtReason::BadSignature),
-            })));
+            changeset
+                .meta_output
+                .push(MetaOutKind::ErrorOut(ErrorOut::Reject(RejectParams {
+                    name: fullspaceout.spaceout.space.unwrap().name,
+                    reason: RejectReason::BidPSBT(BidPsbtReason::BadSignature),
+                })));
             return;
         }
 
-        changeset.meta_output.push(MetaOutKind::SpaceOut(fullspaceout));
+        changeset
+            .meta_output
+            .push(MetaOutKind::SpaceOut(fullspaceout));
     }
 
     /// Auctioned output may already be representing another space,
     /// so we'll need to revoke it, and then we could attach this
     /// any new space to the output
     #[inline]
-    fn detach_existing_space(auctioned: &mut AuctionedOutput, changeset: &mut ValidatedTransaction) {
+    fn detach_existing_space(
+        auctioned: &mut AuctionedOutput,
+        changeset: &mut ValidatedTransaction,
+    ) {
         if let Some(spaceout) = &auctioned.output {
             if spaceout.space.is_none() {
                 return;
             }
 
-            changeset.meta_output.push(MetaOutKind::ErrorOut(ErrorOut::Revoke(RevokeParams {
-                spaceout: FullSpaceOut {
-                    outpoint: auctioned.bid_psbt.outpoint,
-                    spaceout: spaceout.clone(),
-                },
-                reason: RevokeReason::BadSpend,
-            })));
+            changeset
+                .meta_output
+                .push(MetaOutKind::ErrorOut(ErrorOut::Revoke(RevokeParams {
+                    spaceout: FullSpaceOut {
+                        outpoint: auctioned.bid_psbt.outpoint,
+                        spaceout: spaceout.clone(),
+                    },
+                    reason: RevokeReason::BadSpend,
+                })));
         }
     }
 
@@ -497,23 +525,46 @@ impl Validator {
         };
 
         if space.is_expired(height) {
-            changeset.meta_output.push(MetaOutKind::ErrorOut(ErrorOut::Revoke(RevokeParams {
-                spaceout: FullSpaceOut {
-                    outpoint: input.previous_output,
-                    spaceout: spaceout.clone(),
-                },
-                reason: RevokeReason::Expired,
-            })));
+            changeset
+                .meta_output
+                .push(MetaOutKind::ErrorOut(ErrorOut::Revoke(RevokeParams {
+                    spaceout: FullSpaceOut {
+                        outpoint: input.previous_output,
+                        spaceout: spaceout.clone(),
+                    },
+                    reason: RevokeReason::Expired,
+                })));
             return;
         }
 
         match space.covenant {
-            Covenant::Bid { claim_height, total_burned, .. } => {
-                self.process_bid_spend(height, tx_version, auctioned, input, input_index, stxo, total_burned, claim_height, changeset);
+            Covenant::Bid {
+                claim_height,
+                total_burned,
+                ..
+            } => {
+                self.process_bid_spend(
+                    height,
+                    tx_version,
+                    auctioned,
+                    input,
+                    input_index,
+                    stxo,
+                    total_burned,
+                    claim_height,
+                    changeset,
+                );
             }
             Covenant::Transfer { .. } => {
-                self.process_transfer(height, input, input_index, stxo.previous_output.clone(), space.data_owned(), changeset);
-            },
+                self.process_transfer(
+                    height,
+                    input,
+                    input_index,
+                    stxo.previous_output.clone(),
+                    space.data_owned(),
+                    changeset,
+                );
+            }
             Covenant::Reserved => {
                 // Treat it as a coin spend, so it remains locked in our UTXO set
                 changeset.input[input_index as usize] = TxInKind::CoinIn(input);
@@ -540,35 +591,41 @@ impl Validator {
             // Bid spends must have an auctioned output
             let auctioned_output = auctioned.take();
             if auctioned_output.is_none() {
-                changeset.meta_output.push(MetaOutKind::ErrorOut(ErrorOut::Revoke(RevokeParams {
-                    spaceout: FullSpaceOut {
-                        outpoint: input.previous_output,
-                        spaceout,
-                    },
-                    reason: RevokeReason::BidPsbt(BidPsbtReason::Required),
-                })));
+                changeset
+                    .meta_output
+                    .push(MetaOutKind::ErrorOut(ErrorOut::Revoke(RevokeParams {
+                        spaceout: FullSpaceOut {
+                            outpoint: input.previous_output,
+                            spaceout,
+                        },
+                        reason: RevokeReason::BidPsbt(BidPsbtReason::Required),
+                    })));
                 return;
             }
             let auctioned_output = auctioned_output.unwrap();
             if auctioned_output.output.is_none() {
-                changeset.meta_output.push(MetaOutKind::ErrorOut(ErrorOut::Revoke(RevokeParams {
-                    spaceout: FullSpaceOut {
-                        outpoint: input.previous_output,
-                        spaceout,
-                    },
-                    reason: RevokeReason::BidPsbt(BidPsbtReason::OutputSpent),
-                })));
+                changeset
+                    .meta_output
+                    .push(MetaOutKind::ErrorOut(ErrorOut::Revoke(RevokeParams {
+                        spaceout: FullSpaceOut {
+                            outpoint: input.previous_output,
+                            spaceout,
+                        },
+                        reason: RevokeReason::BidPsbt(BidPsbtReason::OutputSpent),
+                    })));
                 return;
             }
 
             if auctioned_output.bid_psbt.burn_amount == Amount::ZERO {
-                changeset.meta_output.push(MetaOutKind::ErrorOut(ErrorOut::Revoke(RevokeParams {
-                    spaceout: FullSpaceOut {
-                        outpoint: input.previous_output,
-                        spaceout,
-                    },
-                    reason: RevokeReason::BidPsbt(BidPsbtReason::LowBidAmount),
-                })));
+                changeset
+                    .meta_output
+                    .push(MetaOutKind::ErrorOut(ErrorOut::Revoke(RevokeParams {
+                        spaceout: FullSpaceOut {
+                            outpoint: input.previous_output,
+                            spaceout,
+                        },
+                        reason: RevokeReason::BidPsbt(BidPsbtReason::LowBidAmount),
+                    })));
                 return;
             }
 
@@ -595,27 +652,33 @@ impl Validator {
             fullspaceout.spaceout.space = Some(spaceout.space.unwrap());
 
             if !fullspaceout.verify_bid_sig() {
-                changeset.meta_output.push(MetaOutKind::ErrorOut(ErrorOut::Revoke(RevokeParams {
-                    spaceout: fullspaceout,
-                    reason: RevokeReason::BidPsbt(BidPsbtReason::BadSignature),
-                })));
+                changeset
+                    .meta_output
+                    .push(MetaOutKind::ErrorOut(ErrorOut::Revoke(RevokeParams {
+                        spaceout: fullspaceout,
+                        reason: RevokeReason::BidPsbt(BidPsbtReason::BadSignature),
+                    })));
                 return;
             }
 
-            changeset.meta_output.push(MetaOutKind::SpaceOut(fullspaceout));
+            changeset
+                .meta_output
+                .push(MetaOutKind::SpaceOut(fullspaceout));
             return;
         }
 
         // Handle non-bid spends:
         // Check register attempt before claim height
         if claim_height.is_none() || *claim_height.as_ref().unwrap() > height {
-            changeset.meta_output.push(MetaOutKind::ErrorOut(ErrorOut::Revoke(RevokeParams {
-                spaceout: FullSpaceOut {
-                    outpoint: input.previous_output,
-                    spaceout,
-                },
-                reason: RevokeReason::PrematureClaim,
-            })));
+            changeset
+                .meta_output
+                .push(MetaOutKind::ErrorOut(ErrorOut::Revoke(RevokeParams {
+                    spaceout: FullSpaceOut {
+                        outpoint: input.previous_output,
+                        spaceout,
+                    },
+                    reason: RevokeReason::PrematureClaim,
+                })));
             return;
         }
 
@@ -639,15 +702,17 @@ impl Validator {
                 let txout = match output {
                     TxOutKind::CoinOut(txout) => txout.clone(),
                     _ => {
-                        changeset.meta_output.push(MetaOutKind::ErrorOut(ErrorOut::Revoke(RevokeParams {
-                            spaceout: FullSpaceOut {
-                                outpoint: input.previous_output,
-                                spaceout,
-                            },
-                            reason: RevokeReason::BadSpend,
-                        })));
+                        changeset
+                            .meta_output
+                            .push(MetaOutKind::ErrorOut(ErrorOut::Revoke(RevokeParams {
+                                spaceout: FullSpaceOut {
+                                    outpoint: input.previous_output,
+                                    spaceout,
+                                },
+                                reason: RevokeReason::BadSpend,
+                            })));
                         return;
-                    },
+                    }
                 };
 
                 let mut space = spaceout.space.unwrap();
@@ -664,13 +729,15 @@ impl Validator {
             }
             None => {
                 // No corresponding output found
-                changeset.meta_output.push(MetaOutKind::ErrorOut(ErrorOut::Revoke(RevokeParams {
-                    spaceout: FullSpaceOut {
-                        outpoint: input.previous_output,
-                        spaceout,
-                    },
-                    reason: RevokeReason::BadSpend,
-                })));
+                changeset
+                    .meta_output
+                    .push(MetaOutKind::ErrorOut(ErrorOut::Revoke(RevokeParams {
+                        spaceout: FullSpaceOut {
+                            outpoint: input.previous_output,
+                            spaceout,
+                        },
+                        reason: RevokeReason::BadSpend,
+                    })));
             }
         };
     }

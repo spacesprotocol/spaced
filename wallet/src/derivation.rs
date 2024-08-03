@@ -1,17 +1,22 @@
-use bdk::bitcoin::{bip32, Network};
-use bdk::descriptor::DescriptorError;
-use bdk::KeychainKind;
-use bdk::keys::DerivableKey;
-use bdk::miniscript::Tap;
-use bdk::keys::IntoDescriptorKey;
-use bdk::template::{DescriptorTemplate, DescriptorTemplateOut, P2TR};
+use bdk_wallet::{
+    descriptor::DescriptorError,
+    keys::{DerivableKey, IntoDescriptorKey},
+    miniscript::Tap,
+    template::{DescriptorTemplate, DescriptorTemplateOut, P2TR},
+    KeychainKind,
+};
+use bitcoin::{bip32, Network};
 
 // Spaces experimental derivation path
 // m/200/<standard-bip-32-derivation-paths>
 // for example P2TR would be
 // m/200/86h/0h/0h/0/0
 pub struct SpaceDerivation<K: DerivableKey<Tap>>(pub K, pub KeychainKind);
-pub struct SpaceDerivationPublic<K: DerivableKey<Tap>>(pub K, pub bip32::Fingerprint, pub KeychainKind);
+pub struct SpaceDerivationPublic<K: DerivableKey<Tap>>(
+    pub K,
+    pub bip32::Fingerprint,
+    pub KeychainKind,
+);
 
 impl<K: DerivableKey<Tap>> DescriptorTemplate for SpaceDerivation<K> {
     fn build(self, network: Network) -> Result<DescriptorTemplateOut, DescriptorError> {
@@ -21,7 +26,10 @@ impl<K: DerivableKey<Tap>> DescriptorTemplate for SpaceDerivation<K> {
 
 impl<K: DerivableKey<Tap>> DescriptorTemplate for SpaceDerivationPublic<K> {
     fn build(self, network: Network) -> Result<DescriptorTemplateOut, DescriptorError> {
-        P2TR(segwit_v1::make_bipxx_public(86, self.0, self.1, self.2, network)?).build(network)
+        P2TR(segwit_v1::make_bipxx_public(
+            86, self.0, self.1, self.2, network,
+        )?)
+        .build(network)
     }
 }
 
