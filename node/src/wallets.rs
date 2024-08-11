@@ -3,9 +3,10 @@ use std::{collections::BTreeMap, str::FromStr, time::Duration};
 use anyhow::anyhow;
 use clap::ValueEnum;
 use futures::{stream::FuturesUnordered, StreamExt};
-use log::{debug, info};
+use log::info;
 use protocol::{
     bitcoin::Txid,
+    constants::ChainAnchor,
     hasher::{KeyHasher, SpaceHash},
     prepare::DataSource,
     sname::{NameLike, SName},
@@ -17,21 +18,26 @@ use tokio::{
     select,
     sync::{broadcast, mpsc, mpsc::Receiver, oneshot},
 };
-use wallet::{address::SpaceAddress, bdk_wallet::{bitcoin::psbt::Input, KeychainKind, LocalOutput, Utxo, WeightedUtxo}, bitcoin::{Address, Amount, FeeRate, Network, Sequence}, bitcoin, builder::{
-    CoinTransfer, SpaceTransfer, SpacesAwareCoinSelection, TransactionTag, TransferRequest,
-}, DoubleUtxo, SpacesWallet, WalletInfo};
-use wallet::bdk_wallet::descriptor::ExtendedDescriptor;
+use wallet::{
+    address::SpaceAddress,
+    bdk_wallet::{bitcoin::psbt::Input, KeychainKind, LocalOutput, Utxo, WeightedUtxo},
+    bitcoin,
+    bitcoin::{Address, Amount, FeeRate, Sequence},
+    builder::{
+        CoinTransfer, SpaceTransfer, SpacesAwareCoinSelection, TransactionTag, TransferRequest,
+    },
+    DoubleUtxo, SpacesWallet, WalletInfo,
+};
+
 use crate::{
+    config::ExtendedNetwork,
     node::BlockSource,
-    rpc::{RpcWalletRequest, RpcWalletTxBuilder},
+    rpc::{LoadedWallet, RpcWalletRequest, RpcWalletTxBuilder},
     source::{
         BitcoinBlockSource, BitcoinRpc, BitcoinRpcError, BlockEvent, BlockFetchError, BlockFetcher,
-        RpcBlockId,
     },
     store::{ChainState, LiveSnapshot, Sha256},
-    sync::Mempool,
 };
-use crate::config::ExtendedNetwork;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TxResponse {
@@ -45,8 +51,7 @@ pub struct TxResponse {
 pub struct WalletResponse {
     pub sent: Vec<TxResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub raw: Option<Vec<String>>
-
+    pub raw: Option<Vec<String>>,
 }
 
 pub enum WalletCommand {
@@ -129,7 +134,7 @@ impl RpcWallet {
             if let Some(fee_rate) = res["feerate"].as_f64() {
                 // Convert BTC/kB to sat/vB
                 let fee_rate_sat_vb = (fee_rate * 100_000.0).ceil() as u64;
-                return  FeeRate::from_sat_per_vb(fee_rate_sat_vb)
+                return FeeRate::from_sat_per_vb(fee_rate_sat_vb);
             }
         }
 
@@ -198,23 +203,13 @@ impl RpcWallet {
         network: ExtendedNetwork,
         source: &BitcoinBlockSource,
         mut state: &mut LiveSnapshot,
-        mempool: &Mempool,
         wallet: &mut SpacesWallet,
         command: WalletCommand,
     ) -> anyhow::Result<()> {
         match command {
-            WalletCommand::GetInfo { resp } => {
-                _ = resp.send(Ok(wallet.get_info()))
-            }
+            WalletCommand::GetInfo { resp } => _ = resp.send(Ok(wallet.get_info())),
             WalletCommand::BatchTx { request, resp } => {
-                let batch_result = Self::batch_tx(
-                    network,
-                    mempool.clone(),
-                    &source,
-                    wallet,
-                    &mut state,
-                    request,
-                );
+                let batch_result = Self::batch_tx(network, &source, wallet, &mut state, request);
                 _ = resp.send(batch_result);
             }
             WalletCommand::BumpFee {
@@ -284,7 +279,6 @@ impl RpcWallet {
         network: ExtendedNetwork,
         source: BitcoinBlockSource,
         mut state: LiveSnapshot,
-        mempool: Mempool,
         mut wallet: SpacesWallet,
         mut commands: Receiver<WalletCommand>,
         mut shutdown: broadcast::Receiver<()>,
@@ -293,7 +287,7 @@ impl RpcWallet {
 
         let mut wallet_tip = {
             let tip = wallet.coins.local_chain().tip();
-            RpcBlockId {
+            ChainAnchor {
                 height: tip.height(),
                 hash: tip.hash(),
             }
@@ -303,19 +297,11 @@ impl RpcWallet {
 
         loop {
             if shutdown.try_recv().is_ok() {
-                fetcher.stop();
                 info!("Shutting down wallet sync");
                 break;
             }
             if let Ok(command) = commands.try_recv() {
-                Self::wallet_handle_commands(
-                    network,
-                    &source,
-                    &mut state,
-                    &mempool,
-                    &mut wallet,
-                    command,
-                )?;
+                Self::wallet_handle_commands(network, &source, &mut state, &mut wallet, command)?;
             }
             if let Ok(event) = receiver.try_recv() {
                 match event {
@@ -371,6 +357,8 @@ impl RpcWallet {
             // TODO: update wallet mempool
             std::thread::sleep(Duration::from_millis(10));
         }
+
+        fetcher.stop();
         Ok(())
     }
 
@@ -468,7 +456,6 @@ impl RpcWallet {
 
     fn batch_tx(
         network: ExtendedNetwork,
-        mempool: Mempool,
         source: &BitcoinBlockSource,
         wallet: &mut SpacesWallet,
         store: &mut LiveSnapshot,
@@ -551,17 +538,6 @@ impl RpcWallet {
                         let spaceout = store.get_space_info(&spacehash)?;
                         if spaceout.is_some() {
                             return Err(anyhow!("open '{}': space already exists", params.name));
-                        }
-
-                        // Warn if seen in mempool
-                        if let Some(mem_tx) = mempool.get_open(&params.name) {
-                            return Err(anyhow!(
-                                "An existing open for `{}` \
-                            in mempool: tx: #{} seen at: {}",
-                                params.name,
-                                mem_tx.tx.compute_txid(),
-                                mem_tx.seen
-                            ));
                         }
                     }
 
@@ -720,20 +696,15 @@ impl RpcWallet {
 
         Ok(WalletResponse {
             sent: result_set,
-            raw: if has_errors {
-                Some(raw_set)
-            } else {
-                None
-            }
+            raw: if has_errors { Some(raw_set) } else { None },
         })
     }
 
     pub async fn service(
         network: ExtendedNetwork,
-        mempool: Mempool,
         rpc: BitcoinRpc,
         store: LiveSnapshot,
-        mut channel: Receiver<(SpacesWallet, Receiver<WalletCommand>)>,
+        mut channel: Receiver<LoadedWallet>,
         shutdown: broadcast::Sender<()>,
     ) -> anyhow::Result<()> {
         let mut shutdown_signal = shutdown.subscribe();
@@ -746,21 +717,25 @@ impl RpcWallet {
                     break;
                 }
                 wallet = channel.recv() => {
-                    if let Some( (wallet, wallet_commands) ) = wallet {
-                        let wallet_name = wallet.name().to_string();
+                    if let Some( loaded ) = wallet {
+                        let wallet_name = loaded.wallet.name().to_string();
                         info!("Loaded wallet: {}", wallet_name);
 
                         let wallet_chain = store.clone();
-                        let wallet_mem = mempool.clone();
                         let rpc = rpc.clone();
                         let wallet_shutdown = shutdown.subscribe();
                         let (tx, rx) = oneshot::channel();
 
                         std::thread::spawn(move || {
                             let source = BitcoinBlockSource::new(rpc);
-                            _ = tx.send(Self::wallet_sync(network, source, wallet_chain,
-                                wallet_mem, wallet, wallet_commands, wallet_shutdown)
-                            );
+                            _ = tx.send(Self::wallet_sync(
+                                network,
+                                source,
+                                wallet_chain,
+                                loaded.wallet,
+                                loaded.rx,
+                                wallet_shutdown
+                            ));
                         });
                         wallet_results.push(named_future(wallet_name, rx));
                     }
@@ -783,13 +758,14 @@ impl RpcWallet {
 
     pub async fn send_get_info(&self) -> anyhow::Result<WalletInfo> {
         let (resp, resp_rx) = oneshot::channel();
-        self.sender
-            .send(WalletCommand::GetInfo { resp })
-            .await?;
+        self.sender.send(WalletCommand::GetInfo { resp }).await?;
         resp_rx.await?
     }
 
-    pub async fn send_batch_tx(&self, request: RpcWalletTxBuilder) -> anyhow::Result<WalletResponse> {
+    pub async fn send_batch_tx(
+        &self,
+        request: RpcWalletTxBuilder,
+    ) -> anyhow::Result<WalletResponse> {
         let (resp, resp_rx) = oneshot::channel();
         self.sender
             .send(WalletCommand::BatchTx { request, resp })

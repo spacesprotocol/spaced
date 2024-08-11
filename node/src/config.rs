@@ -1,12 +1,11 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     env,
     ffi::OsString,
     fmt::Display,
     fs,
     net::{IpAddr, SocketAddr},
     path::PathBuf,
-    sync::{Arc, RwLock},
 };
 
 use clap::{
@@ -23,7 +22,7 @@ use toml::Value;
 use crate::{
     source::{BitcoinRpc, BitcoinRpcAuth},
     store::{LiveStore, Store},
-    sync::{Mempool, Spaced},
+    sync::Spaced,
 };
 
 const RPC_OPTIONS: &str = "RPC Server Options";
@@ -75,6 +74,7 @@ pub struct Args {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ExtendedNetwork {
     Mainnet,
     Testnet,
@@ -142,7 +142,7 @@ impl Args {
             })
             .collect();
 
-        let params = Spaced::params(args.chain);
+        let genesis = Spaced::genesis(args.chain);
         let bitcoin_rpc_auth = if let Some(cookie) = args.bitcoin_rpc_cookie {
             let cookie = std::fs::read_to_string(cookie)?;
             BitcoinRpcAuth::Cookie(cookie)
@@ -161,7 +161,7 @@ impl Args {
 
         let chain_store = Store::open(data_dir.join("protocol.sdb"))?;
         let chain = LiveStore {
-            state: chain_store.begin(&params)?,
+            state: chain_store.begin(&genesis)?,
             store: chain_store,
         };
 
@@ -169,26 +169,20 @@ impl Args {
             true => {
                 let block_store = Store::open(data_dir.join("blocks.sdb"))?;
                 Some(LiveStore {
-                    state: block_store.begin(&params).expect("begin block index"),
+                    state: block_store.begin(&genesis).expect("begin block index"),
                     store: block_store,
                 })
             }
             false => None,
         };
 
-        let tx_count = chain.state.metadata.read().expect("read").tx_count;
         Ok(Spaced {
             network: args.chain,
-            params,
             rpc,
             data_dir,
             bind: rpc_bind_addresses,
             chain,
             block_index,
-            mempool: Mempool {
-                opens: Arc::new(RwLock::new(BTreeMap::new())),
-            },
-            tx_count,
         })
     }
 
@@ -249,7 +243,7 @@ fn default_bitcoin_rpc_url(network: &ExtendedNetwork) -> &'static str {
         ExtendedNetwork::Mainnet => "http://127.0.0.1:8332",
         ExtendedNetwork::Testnet4 => "http://127.0.0.1:48332",
         ExtendedNetwork::Signet => "http://127.0.0.1:38332",
-        ExtendedNetwork::Testnet =>  "http://127.0.0.1:18332",
+        ExtendedNetwork::Testnet => "http://127.0.0.1:18332",
         ExtendedNetwork::Regtest => "http://127.0.0.1:18443",
     }
 }
@@ -362,4 +356,3 @@ pub fn default_spaces_rpc_port(chain: &ExtendedNetwork) -> u16 {
         ExtendedNetwork::Regtest => 7218,
     }
 }
-

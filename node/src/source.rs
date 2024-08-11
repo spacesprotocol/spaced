@@ -13,6 +13,7 @@ use base64::Engine;
 use bitcoin::{Block, BlockHash, Txid};
 use hex::FromHexError;
 use log::{error, info};
+use protocol::constants::ChainAnchor;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use threadpool::ThreadPool;
 use tokio::time::Instant;
@@ -39,7 +40,7 @@ pub struct BlockFetcher {
 }
 
 pub enum BlockEvent {
-    Block(RpcBlockId, Block),
+    Block(ChainAnchor, Block),
     Error(BlockFetchError),
 }
 
@@ -298,24 +299,6 @@ impl BitcoinRpcAuth {
     }
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub struct RpcBlockId {
-    pub height: u32,
-    pub hash: BlockHash,
-}
-
-impl Ord for RpcBlockId {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.height.cmp(&other.height)
-    }
-}
-
-impl PartialOrd for RpcBlockId {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
 impl BlockFetcher {
     pub fn new(
         rpc: BitcoinRpc,
@@ -337,9 +320,10 @@ impl BlockFetcher {
         self.job_id.fetch_add(1, Ordering::SeqCst);
     }
 
-    pub fn start(&self, mut start_block: RpcBlockId) {
+    pub fn start(&self, mut start_block: ChainAnchor) {
         self.stop();
 
+        let job_id = self.job_id.load(Ordering::SeqCst);
         let task_client = self.client.clone();
         let task_rpc = self.rpc.clone();
         let current_task = self.job_id.clone();
@@ -347,7 +331,6 @@ impl BlockFetcher {
 
         _ = std::thread::spawn(move || {
             let mut last_check = Instant::now() - Duration::from_secs(2);
-            let job_id = current_task.load(Ordering::SeqCst);
 
             loop {
                 if current_task.load(Ordering::SeqCst) != job_id {
@@ -355,7 +338,7 @@ impl BlockFetcher {
                     return;
                 }
                 if last_check.elapsed() < Duration::from_secs(1) {
-                    std::thread::sleep(Duration::from_millis(1));
+                    std::thread::sleep(Duration::from_millis(10));
                     continue;
                 }
                 last_check = Instant::now();
@@ -402,10 +385,10 @@ impl BlockFetcher {
         current_task: Arc<AtomicUsize>,
         rpc: Arc<BitcoinRpc>,
         sender: std::sync::mpsc::SyncSender<BlockEvent>,
-        start_block: RpcBlockId,
+        start_block: ChainAnchor,
         end_height: u32,
         concurrency: usize,
-    ) -> Result<RpcBlockId, BlockFetchError> {
+    ) -> Result<ChainAnchor, BlockFetchError> {
         let pool = ThreadPool::new(concurrency);
         let client = reqwest::blocking::Client::new();
 
@@ -423,6 +406,10 @@ impl BlockFetcher {
             }
 
             while pool.queued_count() < concurrency && queued_height <= end_height {
+                if current_task.load(Ordering::SeqCst) != job_id {
+                    return Err(BlockFetchError::ChannelClosed);
+                }
+
                 let tx = tx.clone();
                 let rpc = rpc.clone();
                 let task_client = client.clone();
@@ -438,7 +425,7 @@ impl BlockFetcher {
                         let block = Self::fetch_block(&rpc, &task_client, &hash)?;
                         Ok((
                             queued_height,
-                            RpcBlockId {
+                            ChainAnchor {
                                 height: queued_height,
                                 hash,
                             },
@@ -470,7 +457,7 @@ impl BlockFetcher {
                         return Err(BlockFetchError::BlockMismatch);
                     }
                     sender
-                        .send(BlockEvent::Block(id, block))
+                        .send(BlockEvent::Block(id.clone(), block))
                         .map_err(|_| BlockFetchError::ChannelClosed)?;
                     previous_hash = id.hash;
                     next_emit_height += 1;
@@ -478,7 +465,7 @@ impl BlockFetcher {
             }
         }
 
-        Ok(RpcBlockId {
+        Ok(ChainAnchor {
             height: next_emit_height - 1,
             hash: previous_hash,
         })

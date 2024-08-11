@@ -8,18 +8,17 @@ use bitcoin::{absolute, transaction::Version, Amount, OutPoint, Transaction, TxI
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    constants::{AUCTION_DURATION, AUCTION_EXTENSION_ON_BID, RENEWAL_INTERVAL, ROLLOUT_BATCH_SIZE},
     prepare::{
         is_magic_lock_time, AuctionedOutput, FullTxIn, PreparedTransaction, TrackableOutput, SSTXO,
     },
     script::{OpOpenContext, ScriptError, SpaceKind},
     sname::SName,
-    BidPsbtReason, Covenant, FullSpaceOut, Params, RejectReason, RevokeReason, Space, SpaceOut,
+    BidPsbtReason, Covenant, FullSpaceOut, RejectReason, RevokeReason, Space, SpaceOut,
 };
 
 #[derive(Debug, Clone)]
-pub struct Validator {
-    pub params: Params,
-}
+pub struct Validator {}
 
 #[derive(Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -140,8 +139,8 @@ pub struct EventOutput {
 }
 
 impl Validator {
-    pub fn new(config: Params) -> Validator {
-        Validator { params: config }
+    pub fn new() -> Validator {
+        Self {}
     }
 
     pub fn process(&self, height: u32, mut tx: PreparedTransaction) -> ValidatedTransaction {
@@ -312,10 +311,7 @@ impl Validator {
         entries: Vec<FullSpaceOut>,
     ) -> ValidatedTransaction {
         assert!(coinbase.is_coinbase(), "expected a coinbase tx");
-        assert!(
-            entries.len() <= self.params.rollout_batch_size as usize,
-            "bad rollout size"
-        );
+        assert!(entries.len() <= ROLLOUT_BATCH_SIZE, "bad rollout size");
 
         let mut tx = ValidatedTransaction {
             version: coinbase.version,
@@ -348,7 +344,7 @@ impl Validator {
                         "space {} is already rolled out",
                         space_ref.name
                     );
-                    *claim_height = Some(height + self.params.auction_block_interval as u32);
+                    *claim_height = Some(height + AUCTION_DURATION);
                     *total_burned
                 }
                 _ => {
@@ -631,7 +627,7 @@ impl Validator {
 
             let claim_height = if let Some(claim_height) = claim_height {
                 // Extend auction if necessary
-                let extension = height + self.params.auction_bid_extension as u32;
+                let extension = height + AUCTION_EXTENSION_ON_BID;
                 Some(core::cmp::max(extension, claim_height))
             } else {
                 // pre-auction phase
@@ -717,7 +713,7 @@ impl Validator {
 
                 let mut space = spaceout.space.unwrap();
                 space.covenant = Covenant::Transfer {
-                    expire_height: height + self.params.space_refresh_block_interval as u32,
+                    expire_height: height + RENEWAL_INTERVAL,
                     data: existing_data,
                 };
 

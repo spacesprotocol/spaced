@@ -8,19 +8,22 @@ pub extern crate bitcoin;
 #[cfg(feature = "bincode")]
 use bincode::{Decode, Encode};
 use bitcoin::{
-    absolute::{Height, LockTime},
     psbt,
     secp256k1::{schnorr, Message},
     sighash::{Prevouts, SighashCache, TapSighashType},
     taproot,
     transaction::Version,
-    Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness,
+    Amount, OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Witness,
 };
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::{hasher::Hash, sname::SName};
+use crate::{
+    constants::{BID_PSBT_INPUT_SEQUENCE, BID_PSBT_TX_LOCK_TIME, BID_PSBT_TX_VERSION},
+    sname::SName,
+};
 
+pub mod constants;
 pub mod errors;
 pub mod hasher;
 pub mod opcodes;
@@ -28,39 +31,6 @@ pub mod prepare;
 pub mod script;
 pub mod sname;
 pub mod validate;
-
-pub const BID_PSBT_TX_VERSION: i32 = 2;
-pub const BID_PSBT_TX_LOCK_TIME: LockTime = LockTime::Blocks(Height::ZERO);
-pub const BID_PSBT_INPUT_SEQUENCE: Sequence = Sequence::ENABLE_RBF_NO_LOCKTIME;
-
-/// Represents the Spaces protocol configurable parameters.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Params {
-    /// Represents the block hash at which the protocol is activated.
-    pub activation_block: Hash,
-
-    ///  Represents the block height at which the protocol is activated.
-    pub activation_block_height: u32,
-
-    /// The frequency at which new spaces are released for auction.
-    pub rollout_block_interval: u16,
-
-    /// The number of spaces to be rolled out at each block interval.
-    /// It specifies the quantity of names made available for auction in each rollout.
-    pub rollout_batch_size: u16,
-
-    /// The number of blocks for the auction phase for each name before it can be safely registered
-    /// by the winning bidder.
-    pub auction_block_interval: u16,
-
-    /// The number of blocks to extend the auction if a bid
-    /// is placed towards the end of an auction.
-    pub auction_bid_extension: u16,
-
-    /// Space holder must prove continued ownership by refreshing the space
-    /// through transfers every specified number of blocks.
-    pub space_refresh_block_interval: u16,
-}
 
 #[derive(Clone, PartialEq, Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]

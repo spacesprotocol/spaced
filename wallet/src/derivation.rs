@@ -8,9 +8,9 @@ use bdk_wallet::{
 use bitcoin::{bip32, Network};
 
 // Spaces experimental derivation path
-// m/200/<standard-bip-32-derivation-paths>
+// m/200'/<standard-bip-32-derivation-paths>
 // for example P2TR would be
-// m/200/86h/0h/0h/0/0
+// m/200'/86'/0'/0'/0/*
 pub struct SpaceDerivation<K: DerivableKey<Tap>>(pub K, pub KeychainKind);
 pub struct SpaceDerivationPublic<K: DerivableKey<Tap>>(
     pub K,

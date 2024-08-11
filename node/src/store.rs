@@ -11,20 +11,18 @@ use std::{
 use anyhow::Result;
 use bincode::{config, Decode, Encode};
 use protocol::{
-    bitcoin::{hashes::Hash as HashUtil, BlockHash, OutPoint},
+    bitcoin::OutPoint,
+    constants::{ChainAnchor, ROLLOUT_BATCH_SIZE},
     hasher::{BidHash, KeyHash, OutpointHash, SpaceHash},
     prepare::DataSource,
-    FullSpaceOut, Params, SpaceOut,
+    FullSpaceOut, SpaceOut,
 };
-use serde::{Deserialize, Serialize};
 use spacedb::{
     db::{Database, SnapshotIterator},
     fs::FileBackend,
     tx::{KeyIterator, ReadTransaction, WriteTransaction},
     Configuration, Hash, NodeHasher, Sha256Hasher,
 };
-
-use crate::source::RpcBlockId;
 
 type SpaceDb = Database<Sha256Hasher>;
 type ReadTx = ReadTransaction<Sha256Hasher>;
@@ -45,8 +43,7 @@ pub struct LiveStore {
 #[derive(Clone)]
 pub struct LiveSnapshot {
     db: SpaceDb,
-    params: Params,
-    pub metadata: Arc<RwLock<StoreCheckpoint>>,
+    pub tip: Arc<RwLock<ChainAnchor>>,
     staged: Arc<RwLock<Staged>>,
     snapshot: (u32, ReadTx),
 }
@@ -56,23 +53,6 @@ pub struct Staged {
     snapshot_version: u32,
     /// Stores changes until committed
     memory: WriteMemory,
-}
-
-#[derive(Serialize, Deserialize, Encode, Decode, Clone, Eq, PartialEq, Debug)]
-pub struct StoreCheckpoint {
-    pub block_height: u32,
-    #[bincode(with_serde)]
-    pub block_hash: BlockHash,
-    pub tx_count: u64,
-}
-
-impl StoreCheckpoint {
-    pub fn block_id(&self) -> RpcBlockId {
-        RpcBlockId {
-            height: self.block_height,
-            hash: self.block_hash,
-        }
-    }
 }
 
 impl Store {
@@ -105,25 +85,18 @@ impl Store {
         Ok(self.0.begin_write()?)
     }
 
-    pub fn begin(&self, params: &Params) -> Result<LiveSnapshot> {
+    pub fn begin(&self, genesis_block: &ChainAnchor) -> Result<LiveSnapshot> {
         let snapshot = self.0.begin_read()?;
-        let meta: StoreCheckpoint = if snapshot.metadata().len() == 0 {
-            StoreCheckpoint {
-                block_height: params.activation_block_height,
-                block_hash: BlockHash::from_raw_hash(HashUtil::from_byte_array(
-                    params.activation_block,
-                )),
-                tx_count: 0,
-            }
+        let anchor: ChainAnchor = if snapshot.metadata().len() == 0 {
+            genesis_block.clone()
         } else {
             snapshot.metadata().try_into()?
         };
 
-        let version = meta.block_height;
+        let version = anchor.height;
         let live = LiveSnapshot {
             db: self.0.clone(),
-            params: params.clone(),
-            metadata: Arc::new(RwLock::new(meta)),
+            tip: Arc::new(RwLock::new(anchor)),
             staged: Arc::new(RwLock::new(Staged {
                 snapshot_version: version,
                 memory: BTreeMap::new(),
@@ -216,9 +189,9 @@ impl LiveSnapshot {
         self.staged.read().expect("read").memory.len() > 0
     }
 
-    pub fn restore(&self, checkpoint: StoreCheckpoint) {
-        let snapshot_version = checkpoint.block_height;
-        let mut meta_lock = self.metadata.write().expect("write lock");
+    pub fn restore(&self, checkpoint: ChainAnchor) {
+        let snapshot_version = checkpoint.height;
+        let mut meta_lock = self.tip.write().expect("write lock");
         *meta_lock = checkpoint;
 
         // clear all staged changes
@@ -286,11 +259,11 @@ impl LiveSnapshot {
     fn update_snapshot(&mut self, version: u32) -> anyhow::Result<()> {
         if self.snapshot.0 != version {
             self.snapshot.1 = self.db.begin_read()?;
-            let meta: StoreCheckpoint = self.snapshot.1.metadata().try_into().map_err(|_| {
+            let anchor: ChainAnchor = self.snapshot.1.metadata().try_into().map_err(|_| {
                 std::io::Error::new(std::io::ErrorKind::Other, "could not parse metdata")
             })?;
 
-            assert_eq!(version, meta.block_height, "inconsistent db state");
+            assert_eq!(version, anchor.height, "inconsistent db state");
             self.snapshot.0 = version;
         }
         Ok(())
@@ -315,12 +288,12 @@ impl LiveSnapshot {
         self.snapshot.1.get(key)
     }
 
-    pub fn commit(&self, metadata: StoreCheckpoint, mut tx: WriteTx) -> Result<()> {
+    pub fn commit(&self, metadata: ChainAnchor, mut tx: WriteTx) -> Result<()> {
         let mut staged = self.staged.write().expect("write");
         let changes = mem::replace(
             &mut *staged,
             Staged {
-                snapshot_version: metadata.block_height,
+                snapshot_version: metadata.height,
                 memory: BTreeMap::new(),
             },
         );
@@ -352,9 +325,8 @@ impl LiveSnapshot {
     }
 
     pub fn get_rollout(&mut self, target: usize) -> anyhow::Result<Vec<(u32, SpaceHash)>> {
-        let skip = target * self.params.rollout_batch_size as usize;
-        let entries =
-            self.get_rollout_entries(Some(self.params.rollout_batch_size as usize), skip)?;
+        let skip = target * ROLLOUT_BATCH_SIZE;
+        let entries = self.get_rollout_entries(Some(ROLLOUT_BATCH_SIZE), skip)?;
 
         Ok(entries)
     }
@@ -432,22 +404,6 @@ impl protocol::prepare::DataSource for LiveSnapshot {
             .get(h)
             .map_err(|err| protocol::errors::Error::IO(err.to_string()))?;
         Ok(result)
-    }
-}
-
-impl TryFrom<&[u8]> for StoreCheckpoint {
-    type Error = bincode::error::DecodeError;
-
-    fn try_from(value: &[u8]) -> std::result::Result<Self, Self::Error> {
-        let (meta, _): (StoreCheckpoint, _) = bincode::decode_from_slice(value, config::standard())
-            .expect("could not parse metadata");
-        Ok(meta)
-    }
-}
-
-impl StoreCheckpoint {
-    fn to_vec(&self) -> Vec<u8> {
-        bincode::encode_to_vec(self, config::standard()).expect("encodes metadata")
     }
 }
 

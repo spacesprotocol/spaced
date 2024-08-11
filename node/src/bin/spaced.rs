@@ -2,25 +2,35 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use env_logger::Env;
-use log::{error, info};
+use log::error;
 use spaced::{
     config::{safe_exit, Args},
-    rpc::{AsyncChainState, RpcServerImpl, WalletManager},
+    rpc::{AsyncChainState, LoadedWallet, RpcServerImpl, WalletManager},
     source::BitcoinBlockSource,
     store,
+    sync::Spaced,
     wallets::RpcWallet,
 };
 use store::LiveSnapshot;
 use tokio::{
-    select,
     sync::{broadcast, mpsc},
-    task::JoinHandle,
-    try_join,
+    task::{JoinHandle, JoinSet},
 };
 
 #[tokio::main]
 async fn main() {
-    match start().await {
+    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
+    let sigterm = tokio::signal::ctrl_c();
+
+    let mut app = Composer::new();
+    let shutdown = app.shutdown.clone();
+
+    tokio::spawn(async move {
+        sigterm.await.expect("could not listen for shutdown");
+        let _ = shutdown.send(());
+    });
+
+    match app.run().await {
         Ok(_) => {}
         Err(e) => {
             error!("{}", e.to_string());
@@ -29,134 +39,115 @@ async fn main() {
     }
 }
 
-async fn start() -> anyhow::Result<()> {
-    env_logger::Builder::from_env(Env::default().default_filter_or("info"))
-        .format_timestamp(None)
-        .init();
+struct Composer {
+    shutdown: broadcast::Sender<()>,
+    services: JoinSet<anyhow::Result<()>>,
+}
 
-    let sigint = tokio::signal::ctrl_c();
-
-    let mut spaced = Args::configure()?;
-    let network = spaced.network;
-    let (shutdown_sender, _) = broadcast::channel(1);
-
-    let mempool = spaced.mempool.clone();
-    let params = spaced.params;
-
-    let wallet_chain_state = spaced.chain.state.clone();
-
-    let (async_chain_state, async_chain_state_handle) = create_async_store(
-        spaced.chain.state.clone(),
-        spaced.block_index.as_ref().map(|index| index.state.clone()),
-        shutdown_sender.subscribe(),
-    )
-    .await;
-
-    let (wallet_loader_tx, wallet_loader_rx) = mpsc::channel(4);
-    let wallet_manager = WalletManager {
-        data_dir: spaced.data_dir.join("wallets"),
-        network: spaced.network,
-        rpc: spaced.rpc.clone(),
-        params,
-        wallet_loader: wallet_loader_tx,
-        wallets: Arc::new(Default::default()),
-    };
-
-    let rpc_server = RpcServerImpl::new(async_chain_state.clone(), wallet_manager);
-
-    let rpc_task_server = rpc_server.clone();
-    let rpc_task_shutdown = shutdown_sender.clone();
-    let rpc_server_bind = spaced.bind.clone();
-    let rpc_handle = rpc_task_server.listen(rpc_server_bind, rpc_task_shutdown);
-
-    let spaced_shutdown_sender = shutdown_sender.clone();
-
-    let (spaced_sender, spaced_receiver) = tokio::sync::oneshot::channel();
-    let rpc = spaced.rpc.clone();
-    let rpc2 = spaced.rpc.clone();
-    std::thread::spawn(move || {
-        let source = BitcoinBlockSource::new(rpc);
-        _ = spaced_sender.send(spaced.protocol_sync(source, spaced_shutdown_sender));
-    });
-
-    let wallet_service_shutdown = shutdown_sender.clone();
-    let wallet_service = RpcWallet::service(
-        network,
-        mempool,
-        rpc2,
-        wallet_chain_state,
-        wallet_loader_rx,
-        wallet_service_shutdown,
-    );
-
-    let signal = shutdown_sender.clone();
-    tokio::spawn(async move {
-        _ = sigint.await;
-        _ = signal.send(());
-    });
-
-    let shutdown_result = try_join!(
-        async {
-            let res = spaced_receiver.await;
-            _ = shutdown_sender.send(());
-            if let Ok(res) = res {
-                if let Err(e) = res {
-                    error!("Protocol sync: {}", e);
-                    return Err(anyhow!("Protocol sync error: {}", e));
-                }
-            }
-            Ok(())
-        },
-        async {
-            let res = rpc_handle.await;
-            _ = shutdown_sender.send(());
-            if let Err(e) = res {
-                error!("RPC Server: {}", e);
-                return Err(anyhow!("RPC Server error: {}", e));
-            }
-            Ok(())
-        },
-        async {
-            let res = wallet_service.await;
-            _ = shutdown_sender.send(());
-            if let Err(e) = res {
-                error!("Wallet service: {}", e);
-                return Err(anyhow!("Wallet service error: {}", e));
-            }
-            Ok(())
-        },
-        async {
-            let res = async_chain_state_handle
-                .await
-                .map_err(|e| anyhow!("Async chain state error: {}", e));
-            _ = shutdown_sender.send(());
-            res
+impl Composer {
+    fn new() -> Self {
+        let (shutdown, _) = broadcast::channel(1);
+        Self {
+            shutdown,
+            services: JoinSet::new(),
         }
-    );
-
-    if !shutdown_result.is_ok() {
-        safe_exit(1);
     }
-    Ok(())
+
+    async fn setup_rpc_wallet(&mut self, spaced: &Spaced, rx: mpsc::Receiver<LoadedWallet>) {
+        let wallet_service = RpcWallet::service(
+            spaced.network,
+            spaced.rpc.clone(),
+            spaced.chain.state.clone(),
+            rx,
+            self.shutdown.clone(),
+        );
+
+        self.services.spawn(async move {
+            wallet_service
+                .await
+                .map_err(|e| anyhow!("Wallet service error: {}", e))
+        });
+    }
+
+    async fn setup_rpc_services(&mut self, spaced: &Spaced) {
+        let (wallet_loader_tx, wallet_loader_rx) = mpsc::channel(1);
+
+        let wallet_manager = WalletManager {
+            data_dir: spaced.data_dir.join("wallets"),
+            network: spaced.network,
+            rpc: spaced.rpc.clone(),
+            wallet_loader: wallet_loader_tx,
+            wallets: Arc::new(Default::default()),
+        };
+
+        let (async_chain_state, async_chain_state_handle) = create_async_store(
+            spaced.chain.state.clone(),
+            spaced.block_index.as_ref().map(|index| index.state.clone()),
+            self.shutdown.subscribe(),
+        )
+        .await;
+
+        self.services.spawn(async {
+            async_chain_state_handle
+                .await
+                .map_err(|e| anyhow!("Chain state error: {}", e))
+        });
+        let rpc_server = RpcServerImpl::new(async_chain_state.clone(), wallet_manager);
+
+        let bind = spaced.bind.clone();
+        let shutdown = self.shutdown.clone();
+
+        self.services.spawn(async move {
+            rpc_server
+                .listen(bind, shutdown)
+                .await
+                .map_err(|e| anyhow!("RPC Server error: {}", e))
+        });
+
+        self.setup_rpc_wallet(spaced, wallet_loader_rx).await;
+    }
+
+    async fn setup_sync_service(&mut self, mut spaced: Spaced) {
+        let (spaced_sender, spaced_receiver) = tokio::sync::oneshot::channel();
+
+        let shutdown = self.shutdown.clone();
+        let rpc = spaced.rpc.clone();
+
+        std::thread::spawn(move || {
+            let source = BitcoinBlockSource::new(rpc);
+            _ = spaced_sender.send(spaced.protocol_sync(source, shutdown));
+        });
+
+        self.services.spawn(async move {
+            spaced_receiver
+                .await?
+                .map_err(|e| anyhow!("Protocol sync error: {}", e))
+        });
+    }
+
+    async fn run(&mut self) -> anyhow::Result<()> {
+        let spaced = Args::configure()?;
+        self.setup_rpc_services(&spaced).await;
+        self.setup_sync_service(spaced).await;
+
+        while let Some(res) = self.services.join_next().await {
+            res??
+        }
+
+        Ok(())
+    }
 }
 
 async fn create_async_store(
     chain_state: LiveSnapshot,
     block_index: Option<LiveSnapshot>,
-    mut shutdown: broadcast::Receiver<()>,
+    shutdown: broadcast::Receiver<()>,
 ) -> (AsyncChainState, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel(32);
     let async_store = AsyncChainState::new(tx);
 
     let handle = tokio::spawn(async move {
-        select! {
-            _ = AsyncChainState::handler(chain_state, block_index, rx) => {
-                // Handler completed normally
-            }
-            Ok(_) = shutdown.recv() => {
-                info!("Shutting down database...");
-            }
-        }
+        AsyncChainState::handler(chain_state, block_index, rx, shutdown).await
     });
     (async_store, handle)
 }

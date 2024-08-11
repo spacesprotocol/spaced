@@ -22,8 +22,12 @@ use bitcoin::{
     OutPoint, Psbt, Script, ScriptBuf, Sequence, Transaction, TxOut, Txid, Witness,
 };
 use protocol::{
-    bitcoin::absolute::Height, opcodes::OP_OPEN, script::ScriptBuilder, sname::NameLike, Covenant,
-    FullSpaceOut, Space, BID_PSBT_INPUT_SEQUENCE, BID_PSBT_TX_VERSION,
+    bitcoin::absolute::Height,
+    constants::{BID_PSBT_INPUT_SEQUENCE, BID_PSBT_TX_VERSION},
+    opcodes::OP_OPEN,
+    script::ScriptBuilder,
+    sname::NameLike,
+    Covenant, FullSpaceOut, Space,
 };
 use serde::{Deserialize, Serialize};
 

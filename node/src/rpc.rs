@@ -1,12 +1,7 @@
 use std::{
-    collections::BTreeMap,
-    fs,
-    io::{Read, Write},
-    net::SocketAddr,
-    path::PathBuf,
-    sync::Arc,
+    collections::BTreeMap, fs, io::Write, net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc,
 };
-use std::str::FromStr;
+
 use anyhow::{anyhow, Context};
 use bdk::{
     bitcoin::{Amount, BlockHash, FeeRate, Network, Txid},
@@ -27,29 +22,42 @@ use protocol::{
         Network::{Regtest, Testnet},
         OutPoint,
     },
+    constants::ChainAnchor,
     hasher::{BaseHash, SpaceHash},
     prepare::DataSource,
-    FullSpaceOut, Params, SpaceOut,
+    FullSpaceOut, SpaceOut,
 };
 use serde::{Deserialize, Serialize};
 use tokio::{
+    select,
     sync::{broadcast, mpsc, oneshot, RwLock},
     task::JoinSet,
 };
-use wallet::{bdk_wallet as bdk, derivation, derivation::SpaceDerivation, DoubleUtxo, SpacesWallet, WalletConfig, WalletExport, bdk_wallet, WalletInfo};
-use wallet::bitcoin::hashes::Hash;
+use wallet::{
+    bdk_wallet as bdk, bitcoin::hashes::Hash, derivation::SpaceDerivation, DoubleUtxo,
+    SpacesWallet, WalletConfig, WalletExport, WalletInfo,
+};
+
 use crate::{
+    config::ExtendedNetwork,
     node::ValidatedBlock,
     source::BitcoinRpc,
     store::{ChainState, LiveSnapshot},
-    wallets::{AddressKind, JointBalance, RpcWallet, TxResponse, WalletCommand},
+    wallets::{AddressKind, JointBalance, RpcWallet, TxResponse, WalletCommand, WalletResponse},
 };
-use crate::config::ExtendedNetwork;
-use crate::wallets::WalletResponse;
 
 pub(crate) type Responder<T> = oneshot::Sender<T>;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerInfo {
+    chain: ExtendedNetwork,
+    tip: ChainAnchor,
+}
+
 pub enum ChainStateCommand {
+    GetTip {
+        resp: Responder<anyhow::Result<ChainAnchor>>,
+    },
     GetSpaceInfo {
         hash: SpaceHash,
         resp: Responder<anyhow::Result<Option<FullSpaceOut>>>,
@@ -84,6 +92,9 @@ pub struct AsyncChainState {
 
 #[rpc(server, client)]
 pub trait Rpc {
+    #[method(name = "getserverinfo")]
+    async fn get_server_info(&self) -> Result<ServerInfo, ErrorObjectOwned>;
+
     #[method(name = "getspaceinfo")]
     async fn get_space_info(
         &self,
@@ -252,20 +263,37 @@ pub struct WalletManager {
     pub data_dir: PathBuf,
     pub network: ExtendedNetwork,
     pub rpc: BitcoinRpc,
-    pub params: Params,
-    pub wallet_loader: mpsc::Sender<(SpacesWallet, mpsc::Receiver<WalletCommand>)>,
+    pub wallet_loader: mpsc::Sender<LoadedWallet>,
     pub wallets: Arc<RwLock<BTreeMap<String, RpcWallet>>>,
+}
+
+pub struct LoadedWallet {
+    pub(crate) rx: mpsc::Receiver<WalletCommand>,
+    pub(crate) wallet: SpacesWallet,
 }
 
 const RPC_WALLET_NOT_LOADED: i32 = -18;
 
+impl LoadedWallet {
+    fn new(wallet: SpacesWallet, rx: mpsc::Receiver<WalletCommand>) -> Self {
+        Self { rx, wallet }
+    }
+}
+
 impl WalletManager {
-    pub async fn import_wallet(&self, client: &reqwest::Client, content: &str) -> anyhow::Result<()>  {
+    pub async fn import_wallet(
+        &self,
+        client: &reqwest::Client,
+        content: &str,
+    ) -> anyhow::Result<()> {
         let wallet = WalletExport::from_str(content)?;
 
         let wallet_path = self.data_dir.join(&wallet.label);
         if wallet_path.exists() {
-            return Err(anyhow!(format!("Wallet with label `{}` already exists", wallet.label)));
+            return Err(anyhow!(format!(
+                "Wallet with label `{}` already exists",
+                wallet.label
+            )));
         }
 
         let wallet_export_path = wallet_path.join("wallet.json");
@@ -305,10 +333,12 @@ impl WalletManager {
         let space_descriptors = Self::default_spaces_descriptors(xpriv);
 
         let start_block = self.get_wallet_start_block(client).await?;
-        let export = WalletExport::from_descriptors(name.clone(), start_block.height,
-                                                    network,
-                                                    coins_descriptors.0,
-                                                    space_descriptors.0
+        let export = WalletExport::from_descriptors(
+            name.clone(),
+            start_block.height,
+            network,
+            coins_descriptors.0,
+            space_descriptors.0,
         )?;
 
         fs::create_dir_all(&wallet_path)?;
@@ -326,39 +356,38 @@ impl WalletManager {
         let network = match self.network {
             ExtendedNetwork::Testnet => Network::Testnet,
             ExtendedNetwork::Testnet4 => {
-                genesis_hash = Some(
-                    BlockHash::from_byte_array([
-                        67, 240, 139, 218, 176, 80, 227, 91, 86, 124, 134, 75, 145, 244, 127, 80, 174, 114, 90,
-                        226, 222, 83, 188, 251, 186, 242, 132, 218, 0, 0, 0, 0,
-                    ]));
+                genesis_hash = Some(BlockHash::from_byte_array([
+                    67, 240, 139, 218, 176, 80, 227, 91, 86, 124, 134, 75, 145, 244, 127, 80, 174,
+                    114, 90, 226, 222, 83, 188, 251, 186, 242, 132, 218, 0, 0, 0, 0,
+                ]));
                 Network::Testnet
             }
 
             // Use testnet in the wallet if regtest is specified to work around
             // a bug in bdk comparing regtest descriptors
             ExtendedNetwork::Regtest => {
-                genesis_hash = Some(bdk::bitcoin::constants::genesis_block(Regtest)
-                    .header
-                    .block_hash());
+                genesis_hash = Some(
+                    bdk::bitcoin::constants::genesis_block(Regtest)
+                        .header
+                        .block_hash(),
+                );
                 Network::Testnet
-            },
+            }
             ExtendedNetwork::Signet => {
                 genesis_hash = Some(
                     bdk::bitcoin::constants::genesis_block(Network::Signet)
                         .header
-                        .block_hash());
+                        .block_hash(),
+                );
                 Testnet
-            },
-            _ => self.network.fallback_network()
+            }
+            _ => self.network.fallback_network(),
         };
 
         (network, genesis_hash)
     }
 
-    pub async fn load_wallet(
-        &self,
-        client: &reqwest::Client,
-        name: String) -> anyhow::Result<()> {
+    pub async fn load_wallet(&self, client: &reqwest::Client, name: String) -> anyhow::Result<()> {
         let wallet_dir = self.data_dir.join(name.clone());
         if !wallet_dir.exists() {
             return Err(anyhow!("Wallet does not exist"));
@@ -368,7 +397,7 @@ impl WalletManager {
 
         let (network, genesis_hash) = self.wallet_network();
 
-        let export : WalletExport = serde_json::from_reader(file)?;
+        let export: WalletExport = serde_json::from_reader(file)?;
 
         let mut wallet = SpacesWallet::new(WalletConfig {
             start_block: export.block_height,
@@ -390,13 +419,19 @@ impl WalletManager {
         }
 
         let (rpc_wallet, rpc_wallet_rx) = RpcWallet::new();
-        self.wallet_loader.send((wallet, rpc_wallet_rx)).await?;
+        let loaded_wallet = LoadedWallet::new(wallet, rpc_wallet_rx);
+
+        self.wallet_loader.send(loaded_wallet).await?;
         let mut wallets = self.wallets.write().await;
         wallets.insert(name, rpc_wallet);
         Ok(())
     }
 
-    async fn get_block_hash(&self, client: &reqwest::Client, height: u32) -> anyhow::Result<BlockId> {
+    async fn get_block_hash(
+        &self,
+        client: &reqwest::Client,
+        height: u32,
+    ) -> anyhow::Result<BlockId> {
         let hash = self
             .rpc
             .send_json(&client, &self.rpc.get_block_hash(height))
@@ -427,11 +462,17 @@ impl WalletManager {
     }
 
     fn default_coin_descriptors(x: Xpriv) -> (Bip84<Xpriv>, Bip84<Xpriv>) {
-        ( Bip84(x, KeychainKind::External), Bip84(x, KeychainKind::Internal))
+        (
+            Bip84(x, KeychainKind::External),
+            Bip84(x, KeychainKind::Internal),
+        )
     }
 
     fn default_spaces_descriptors(x: Xpriv) -> (SpaceDerivation<Xpriv>, SpaceDerivation<Xpriv>) {
-        (SpaceDerivation(x, KeychainKind::External), SpaceDerivation(x, KeychainKind::Internal))
+        (
+            SpaceDerivation(x, KeychainKind::External),
+            SpaceDerivation(x, KeychainKind::Internal),
+        )
     }
 }
 
@@ -501,6 +542,16 @@ impl RpcServerImpl {
 
 #[async_trait]
 impl RpcServer for RpcServerImpl {
+    async fn get_server_info(&self) -> Result<ServerInfo, ErrorObjectOwned> {
+        let chain = self.wallet_manager.network;
+        let tip = self
+            .store
+            .get_tip()
+            .await
+            .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))?;
+        Ok(ServerInfo { chain, tip })
+    }
+
     async fn get_space_info(
         &self,
         space_hash_str: String,
@@ -607,18 +658,26 @@ impl RpcServer for RpcServerImpl {
             })
     }
 
-    async fn wallet_export(&self, name: String) -> Result<String, ErrorObjectOwned> {
+    async fn wallet_import(&self, content: String) -> Result<(), ErrorObjectOwned> {
         self.wallet_manager
-            .export_wallet(name)
+            .import_wallet(&self.client, &content)
             .await
             .map_err(|error| {
                 ErrorObjectOwned::owned(RPC_WALLET_NOT_LOADED, error.to_string(), None::<String>)
             })
     }
 
-    async fn wallet_import(&self, content: String) -> Result<(), ErrorObjectOwned> {
+    async fn wallet_get_info(&self, wallet: String) -> Result<WalletInfo, ErrorObjectOwned> {
+        self.wallet(&wallet)
+            .await?
+            .send_get_info()
+            .await
+            .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))
+    }
+
+    async fn wallet_export(&self, name: String) -> Result<String, ErrorObjectOwned> {
         self.wallet_manager
-            .import_wallet(&self.client, &content)
+            .export_wallet(name)
             .await
             .map_err(|error| {
                 ErrorObjectOwned::owned(RPC_WALLET_NOT_LOADED, error.to_string(), None::<String>)
@@ -632,16 +691,6 @@ impl RpcServer for RpcServerImpl {
             .map_err(|error| {
                 ErrorObjectOwned::owned(RPC_WALLET_NOT_LOADED, error.to_string(), None::<String>)
             })
-    }
-
-    async fn wallet_get_info(
-        &self,
-        wallet: String,
-    ) -> Result<WalletInfo, ErrorObjectOwned> {
-        self.wallet(&wallet).await?
-            .send_get_info()
-            .await.map_err(|error|
-        ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))
     }
     async fn wallet_send_request(
         &self,
@@ -729,52 +778,74 @@ impl AsyncChainState {
         Self { sender }
     }
 
+    pub async fn handle_command(
+        chain_state: &mut LiveSnapshot,
+        block_index: &mut Option<LiveSnapshot>,
+        cmd: ChainStateCommand,
+    ) {
+        match cmd {
+            ChainStateCommand::GetTip { resp } => {
+                let tip = chain_state.tip.read().expect("read meta").clone();
+                _ = resp.send(Ok(tip))
+            }
+            ChainStateCommand::GetSpaceInfo { hash, resp } => {
+                let result = chain_state.get_space_info(&hash);
+                let _ = resp.send(result);
+            }
+            ChainStateCommand::GetSpaceout { outpoint, resp } => {
+                let result = chain_state
+                    .get_spaceout(&outpoint)
+                    .context("could not fetch spaceout");
+                let _ = resp.send(result);
+            }
+            ChainStateCommand::GetSpaceOutpoint { hash, resp } => {
+                let result = chain_state
+                    .get_space_outpoint(&hash)
+                    .context("could not fetch spaceout");
+                let _ = resp.send(result);
+            }
+            ChainStateCommand::GetBlockData { block_hash, resp } => match block_index {
+                None => {
+                    let _ = resp.send(Err(anyhow!("block index must be enabled")));
+                }
+                Some(index) => {
+                    let hash = BaseHash::from_slice(block_hash.as_ref());
+                    let _ = resp.send(
+                        index
+                            .get(hash)
+                            .context("Could not fetch blockdata from index"),
+                    );
+                }
+            },
+            ChainStateCommand::EstimateBid { target, resp } => {
+                let estimate = chain_state.estimate_bid(target);
+                _ = resp.send(estimate);
+            }
+            ChainStateCommand::GetRollout { target, resp } => {
+                let rollouts = chain_state.get_rollout(target);
+                _ = resp.send(rollouts);
+            }
+        }
+    }
+
     pub async fn handler(
         mut chain_state: LiveSnapshot,
         mut block_index: Option<LiveSnapshot>,
         mut rx: mpsc::Receiver<ChainStateCommand>,
+        mut shutdown: broadcast::Receiver<()>,
     ) {
-        while let Some(cmd) = rx.recv().await {
-            match cmd {
-                ChainStateCommand::GetSpaceInfo { hash, resp } => {
-                    let result = chain_state.get_space_info(&hash);
-                    let _ = resp.send(result);
+        loop {
+            select! {
+                _ = shutdown.recv() => {
+                     break;
                 }
-                ChainStateCommand::GetSpaceout { outpoint, resp } => {
-                    let result = chain_state
-                        .get_spaceout(&outpoint)
-                        .context("could not fetch spaceout");
-                    let _ = resp.send(result);
-                }
-                ChainStateCommand::GetSpaceOutpoint { hash, resp } => {
-                    let result = chain_state
-                        .get_space_outpoint(&hash)
-                        .context("could not fetch spaceout");
-                    let _ = resp.send(result);
-                }
-                ChainStateCommand::GetBlockData { block_hash, resp } => match &mut block_index {
-                    None => {
-                        let _ = resp.send(Err(anyhow!("block index must be enabled")));
-                    }
-                    Some(index) => {
-                        let hash = BaseHash::from_slice(block_hash.as_ref());
-                        let _ = resp.send(
-                            index
-                                .get(hash)
-                                .context("Could not fetch blockdata from index"),
-                        );
-                    }
-                },
-                ChainStateCommand::EstimateBid { target, resp } => {
-                    let estimate = chain_state.estimate_bid(target);
-                    _ = resp.send(estimate);
-                }
-                ChainStateCommand::GetRollout { target, resp } => {
-                    let rollouts = chain_state.get_rollout(target);
-                    _ = resp.send(rollouts);
+                Some(cmd) = rx.recv() => {
+                    Self::handle_command(&mut chain_state, &mut block_index, cmd).await;
                 }
             }
         }
+
+        info!("Shutting down database reader");
     }
 
     pub async fn estimate_bid(&self, target: usize) -> anyhow::Result<u64> {
@@ -806,6 +877,12 @@ impl AsyncChainState {
         self.sender
             .send(ChainStateCommand::GetSpaceOutpoint { hash, resp })
             .await?;
+        resp_rx.await?
+    }
+
+    pub async fn get_tip(&self) -> anyhow::Result<ChainAnchor> {
+        let (resp, resp_rx) = oneshot::channel();
+        self.sender.send(ChainStateCommand::GetTip { resp }).await?;
         resp_rx.await?
     }
 

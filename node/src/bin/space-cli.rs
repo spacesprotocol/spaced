@@ -1,7 +1,7 @@
 extern crate core;
 
-use std::fs;
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
+
 use base64::{prelude::BASE64_STANDARD, Engine};
 use clap::{Parser, Subcommand};
 use jsonrpsee::{
@@ -17,7 +17,7 @@ use protocol::{
 };
 use serde::{Deserialize, Serialize};
 use spaced::{
-    config::ExtendedNetwork,
+    config::{default_spaces_rpc_port, ExtendedNetwork},
     rpc::{
         BidParams, ExecuteParams, OpenParams, RegisterParams, RpcClient, RpcWalletRequest,
         RpcWalletTxBuilder, SendCoinsParams, TransferSpacesParams,
@@ -25,7 +25,6 @@ use spaced::{
     store::Sha256,
     wallets::AddressKind,
 };
-use spaced::config::default_spaces_rpc_port;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -422,8 +421,8 @@ async fn handle_commands(
             cli.client.wallet_load(name).await?;
         }
         Commands::ImportWallet { path } => {
-            let content = fs::read_to_string(path)
-                .map_err(|e| ClientError::Custom(e.to_string()))?;
+            let content =
+                fs::read_to_string(path).map_err(|e| ClientError::Custom(e.to_string()))?;
             cli.client.wallet_import(content).await?;
         }
         Commands::ExportWallet { name } => {

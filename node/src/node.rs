@@ -7,15 +7,16 @@ use anyhow::{anyhow, Result};
 use bincode::{Decode, Encode};
 use protocol::{
     bitcoin::{Amount, Block, BlockHash, OutPoint},
+    constants::{ChainAnchor, ROLLOUT_BATCH_SIZE, ROLLOUT_BLOCK_INTERVAL},
     hasher::{BidHash, KeyHasher, OutpointHash, SpaceHash},
     prepare::PreparedTransaction,
     sname::NameLike,
     validate::{ErrorOut, MetaOutKind, TxInKind, TxOutKind, ValidatedTransaction, Validator},
-    Covenant, FullSpaceOut, Params, RevokeReason, SpaceOut,
+    Covenant, FullSpaceOut, RevokeReason, SpaceOut,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::store::{ChainState, ChainStore, LiveSnapshot, LiveStore, Sha256, StoreCheckpoint};
+use crate::store::{ChainState, ChainStore, LiveSnapshot, LiveStore, Sha256};
 
 pub trait BlockSource {
     fn get_block_hash(&self, height: u32) -> Result<BlockHash>;
@@ -26,8 +27,6 @@ pub trait BlockSource {
 
 #[derive(Debug, Clone)]
 pub struct Node {
-    pub(crate) tip: StoreCheckpoint,
-    params: Params,
     validator: Validator,
 }
 
@@ -40,7 +39,7 @@ pub struct ValidatedBlock {
 
 #[derive(Debug)]
 pub struct SyncError {
-    checkpoint: StoreCheckpoint,
+    checkpoint: ChainAnchor,
     connect_to: (u32, BlockHash),
 }
 
@@ -49,10 +48,7 @@ impl fmt::Display for SyncError {
         write!(
             f,
             "Could not connect block={}, height={} to checkpoint [block={}, height={}]",
-            self.connect_to.1,
-            self.connect_to.0,
-            self.checkpoint.block_hash,
-            self.checkpoint.block_height
+            self.connect_to.1, self.connect_to.0, self.checkpoint.hash, self.checkpoint.height
         )
     }
 }
@@ -60,11 +56,9 @@ impl fmt::Display for SyncError {
 impl Error for SyncError {}
 
 impl Node {
-    pub fn new(tip: StoreCheckpoint, params: Params) -> Self {
+    pub fn new() -> Self {
         Self {
-            validator: Validator::new(params),
-            params,
-            tip,
+            validator: Validator::new(),
         }
     }
 
@@ -75,22 +69,22 @@ impl Node {
         block_hash: BlockHash,
         block: Block,
         get_block_data: bool,
-    ) -> Result<(Option<ValidatedBlock>, u64)> {
-        if self.tip.block_hash != block.header.prev_blockhash || self.tip.block_height + 1 != height
+    ) -> Result<Option<ValidatedBlock>> {
         {
-            return Err(SyncError {
-                checkpoint: self.tip.clone(),
-                connect_to: (height, block_hash),
+            let tip = chain.state.tip.read().expect("read tip");
+            if tip.hash != block.header.prev_blockhash || tip.height + 1 != height {
+                return Err(SyncError {
+                    checkpoint: tip.clone(),
+                    connect_to: (height, block_hash),
+                }
+                .into());
             }
-            .into());
         }
-        let mut tx_count = 0;
 
         let mut block_data = ValidatedBlock { tx_data: vec![] };
 
-        let rollout = (height - 1) % self.params.rollout_block_interval as u32 == 0;
-        if rollout {
-            let batch = Self::get_rollout_batch(self.params.rollout_batch_size as usize, chain)?;
+        if (height - 1) % ROLLOUT_BLOCK_INTERVAL == 0 {
+            let batch = Self::get_rollout_batch(ROLLOUT_BATCH_SIZE, chain)?;
             let coinbase = block
                 .coinbase()
                 .expect("expected a coinbase tx to be present in the block")
@@ -114,19 +108,16 @@ impl Node {
                     block_data.tx_data.push(validated_tx.clone());
                 }
                 self.apply_tx(&mut chain.state, validated_tx);
-                tx_count += 1;
             }
         }
-        self.tip = StoreCheckpoint {
-            block_height: height,
-            block_hash,
-            tx_count,
-        };
+        let mut tip = chain.state.tip.write().expect("write tip");
+        tip.height = height;
+        tip.hash = block_hash;
 
         if get_block_data && !block_data.tx_data.is_empty() {
-            return Ok((Some(block_data), tx_count));
+            return Ok(Some(block_data));
         }
-        Ok((None, tx_count))
+        Ok(None)
     }
 
     fn apply_tx(&self, state: &mut LiveSnapshot, changeset: ValidatedTransaction) {

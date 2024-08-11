@@ -1,5 +1,13 @@
-use std::{collections::BTreeMap, fmt, fmt::Debug, fs, path::PathBuf, time::{Duration, SystemTime}};
-use std::str::FromStr;
+use std::{
+    collections::BTreeMap,
+    fmt,
+    fmt::Debug,
+    fs,
+    path::PathBuf,
+    str::FromStr,
+    time::{Duration, SystemTime},
+};
+
 use anyhow::{anyhow, Context};
 use bdk_wallet::{
     chain::{BlockId, ConfirmationTime},
@@ -121,15 +129,17 @@ pub struct WalletDescriptors {
     pub internal: String,
 }
 
-
 impl WalletExport {
-    pub fn from_descriptors<C: IntoWalletDescriptor, S: IntoWalletDescriptor>(label: String, block_height: u32, network: Network, coins: C, spaces: S) -> anyhow::Result<Self> {
+    pub fn from_descriptors<C: IntoWalletDescriptor, S: IntoWalletDescriptor>(
+        label: String,
+        block_height: u32,
+        network: Network,
+        coins: C,
+        spaces: S,
+    ) -> anyhow::Result<Self> {
         let coin_ctx = bdk_wallet::bitcoin::secp256k1::Secp256k1::new();
         let (coin_external, coin_keys) = coins.into_wallet_descriptor(&coin_ctx, network)?;
-
-        let space_ctx = bdk_wallet::bitcoin::secp256k1::Secp256k1::new();
         let (space_external, space_keys) = spaces.into_wallet_descriptor(&coin_ctx, network)?;
-
 
         let coin_external = remove_checksum(coin_external.to_string_with_secret(&coin_keys));
         let space_external = remove_checksum(space_external.to_string_with_secret(&space_keys));
@@ -162,9 +172,7 @@ impl SpacesWallet {
         &self.name
     }
 
-    pub fn new(
-        config: WalletConfig,
-    ) -> anyhow::Result<Self> {
+    pub fn new(config: WalletConfig) -> anyhow::Result<Self> {
         if !config.data_dir.exists() {
             std::fs::create_dir_all(config.data_dir.clone())?;
         }
@@ -222,22 +230,34 @@ impl SpacesWallet {
         let mut descriptors = Vec::with_capacity(4);
 
         descriptors.push(DescriptorInfo {
-            descriptor: self.coins.public_descriptor(KeychainKind::External).to_string(),
+            descriptor: self
+                .coins
+                .public_descriptor(KeychainKind::External)
+                .to_string(),
             internal: false,
             spaces: false,
         });
         descriptors.push(DescriptorInfo {
-            descriptor: self.coins.public_descriptor(KeychainKind::Internal).to_string(),
+            descriptor: self
+                .coins
+                .public_descriptor(KeychainKind::Internal)
+                .to_string(),
             internal: true,
             spaces: false,
         });
         descriptors.push(DescriptorInfo {
-            descriptor: self.spaces.public_descriptor(KeychainKind::External).to_string(),
+            descriptor: self
+                .spaces
+                .public_descriptor(KeychainKind::External)
+                .to_string(),
             internal: false,
             spaces: true,
         });
         descriptors.push(DescriptorInfo {
-            descriptor: self.spaces.public_descriptor(KeychainKind::Internal).to_string(),
+            descriptor: self
+                .spaces
+                .public_descriptor(KeychainKind::Internal)
+                .to_string(),
             internal: true,
             spaces: true,
         });
@@ -251,25 +271,28 @@ impl SpacesWallet {
     }
 
     pub fn export(&self) -> WalletExport {
-        let descriptor = self.coins
+        let descriptor = self
+            .coins
             .public_descriptor(KeychainKind::External)
             .to_string_with_secret(
-                &self.coins
+                &self
+                    .coins
                     .get_signers(KeychainKind::External)
                     .as_key_map(self.coins.secp_ctx()),
             );
 
-        let spaces_descriptor = self.coins
+        let spaces_descriptor = self
+            .coins
             .public_descriptor(KeychainKind::External)
             .to_string_with_secret(
-                &self.spaces
+                &self
+                    .spaces
                     .get_signers(KeychainKind::External)
                     .as_key_map(self.spaces.secp_ctx()),
             );
 
         let descriptor = remove_checksum(descriptor);
         let spaces_descriptor = remove_checksum(spaces_descriptor);
-
 
         WalletExport {
             descriptor,
@@ -570,7 +593,7 @@ impl SpacesWallet {
                     signature,
                     sighash_type,
                 }
-                    .to_vec(),
+                .to_vec(),
             );
             witness.push(&signing_info.script);
             witness.push(&signing_info.control_block.serialize());
