@@ -317,40 +317,59 @@ impl WalletManager {
         client: &reqwest::Client,
         name: String,
     ) -> anyhow::Result<()> {
-        let wallet_path = self.data_dir.join(&name);
-        if wallet_path.exists() {
-            return Err(anyhow!("Wallet already exists"));
-        }
-
         let mnemonic: GeneratedKey<_, Tap> =
             Mnemonic::generate((WordCount::Words12, Language::English))
                 .map_err(|_| anyhow!("Mnemonic generation error"))?;
 
-        let (network, _) = self.wallet_network();
+        let start_block = self.get_wallet_start_block(client).await?;
+        self.setup_new_wallet(name.clone(), mnemonic.to_string(), start_block)?;
+        self.load_wallet(client, name).await?;
+        Ok(())
+    }
+
+    fn setup_new_wallet(
+        &self,
+        name: String,
+        mnemonic: String,
+        start_block: BlockId,
+    ) -> anyhow::Result<()> {
+        let wallet_path = self.data_dir.join(&name);
+        if wallet_path.exists() {
+            return Err(anyhow!(format!("Wallet `{}` already exists", name)));
+        }
+
+        let export = self.wallet_from_mnemonic(name.clone(), mnemonic.to_string(), start_block)?;
+        fs::create_dir_all(&wallet_path)?;
+        let wallet_export_path = wallet_path.join("wallet.json");
+        let mut file = fs::File::create(wallet_export_path)?;
+        file.write_all(export.to_string().as_bytes())?;
+        Ok(())
+    }
+
+    fn wallet_from_mnemonic(
+        &self,
+        name: String,
+        mnemonic: String,
+        start_block: BlockId,
+    ) -> anyhow::Result<WalletExport> {
+        let (network, _) = self.fallback_network();
         let xpriv = Self::descriptor_from_mnemonic(network, &mnemonic.to_string())?;
 
         let coins_descriptors = Self::default_coin_descriptors(xpriv);
         let space_descriptors = Self::default_spaces_descriptors(xpriv);
 
-        let start_block = self.get_wallet_start_block(client).await?;
         let export = WalletExport::from_descriptors(
-            name.clone(),
+            name,
             start_block.height,
             network,
             coins_descriptors.0,
             space_descriptors.0,
         )?;
 
-        fs::create_dir_all(&wallet_path)?;
-        let wallet_export_path = wallet_path.join("wallet.json");
-        let mut file = fs::File::create(wallet_export_path)?;
-        file.write_all(export.to_string().as_bytes())?;
-
-        self.load_wallet(client, name).await?;
-        Ok(())
+        Ok(export)
     }
 
-    fn wallet_network(&self) -> (Network, Option<BlockHash>) {
+    fn fallback_network(&self) -> (Network, Option<BlockHash>) {
         let mut genesis_hash = None;
 
         let network = match self.network {
@@ -387,16 +406,59 @@ impl WalletManager {
         (network, genesis_hash)
     }
 
+    // TODO: remove in the next update
+    pub async fn migrate_legacy_v0_0_1_wallet(
+        &self,
+        name: String,
+        wallet_dir: PathBuf,
+    ) -> anyhow::Result<bool> {
+        let legacy_secret = wallet_dir
+            .join("insecure_secret")
+            .to_str()
+            .unwrap()
+            .replace("/testnet/wallets/", "/test/wallets/");
+        let legacy_secret = std::path::PathBuf::from(legacy_secret);
+
+        if !legacy_secret.exists() {
+            return Ok(false);
+        }
+
+        let mnemonic = fs::read_to_string(legacy_secret)?.trim().to_string();
+        let start_block = match self.network {
+            ExtendedNetwork::Testnet => ChainAnchor::TESTNET(),
+            ExtendedNetwork::Testnet4 => ChainAnchor::TESTNET4(),
+            ExtendedNetwork::Regtest => ChainAnchor::REGTEST(),
+            _ => panic!("could not migrate legacy wallet: unsupported network"),
+        };
+
+        self.setup_new_wallet(
+            name,
+            mnemonic,
+            BlockId {
+                height: start_block.height,
+                hash: start_block.hash,
+            },
+        )?;
+
+        Ok(true)
+    }
+
     pub async fn load_wallet(&self, client: &reqwest::Client, name: String) -> anyhow::Result<()> {
         let wallet_dir = self.data_dir.join(name.clone());
         if !wallet_dir.exists() {
-            return Err(anyhow!("Wallet does not exist"));
+            if self
+                .migrate_legacy_v0_0_1_wallet(name.clone(), wallet_dir.clone())
+                .await?
+            {
+                info!("Migrated legacy wallet {}", name);
+            } else {
+                return Err(anyhow!("Wallet does not exist"));
+            }
         }
 
         let file = fs::File::open(wallet_dir.join("wallet.json"))?;
 
-        let (network, genesis_hash) = self.wallet_network();
-
+        let (network, genesis_hash) = self.fallback_network();
         let export: WalletExport = serde_json::from_reader(file)?;
 
         let mut wallet = SpacesWallet::new(WalletConfig {
@@ -845,7 +907,7 @@ impl AsyncChainState {
             }
         }
 
-        info!("Shutting down database reader");
+        info!("Shutting down chain state...");
     }
 
     pub async fn estimate_bid(&self, target: usize) -> anyhow::Result<u64> {
