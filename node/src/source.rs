@@ -3,6 +3,7 @@ use std::{
     fmt,
     sync::{
         atomic::{AtomicU64, AtomicUsize, Ordering},
+        mpsc::Receiver,
         Arc,
     },
     time::Duration,
@@ -382,93 +383,27 @@ impl BlockFetcher {
 
     fn run_workers(
         job_id: usize,
-        current_task: Arc<AtomicUsize>,
+        current_job: Arc<AtomicUsize>,
         rpc: Arc<BitcoinRpc>,
         sender: std::sync::mpsc::SyncSender<BlockEvent>,
         start_block: ChainAnchor,
         end_height: u32,
         concurrency: usize,
     ) -> Result<ChainAnchor, BlockFetchError> {
-        let pool = ThreadPool::new(concurrency);
-        let client = reqwest::blocking::Client::new();
+        let mut workers = Workers {
+            current_job,
+            job_id,
+            out_of_order: Default::default(),
+            last_emitted: start_block,
+            queued_height: start_block.height + 1,
+            end_height,
+            ordered_sender: sender,
+            rpc,
+            concurrency,
+            pool: ThreadPool::new(concurrency),
+        };
 
-        let (tx, rx) = std::sync::mpsc::sync_channel(1);
-
-        let mut queued_height = start_block.height + 1;
-
-        let mut parsed_blocks = BTreeMap::new();
-        let mut previous_hash = start_block.hash;
-        let mut next_emit_height = queued_height;
-
-        while queued_height <= end_height || pool.active_count() > 0 || !parsed_blocks.is_empty() {
-            if current_task.load(Ordering::SeqCst) != job_id {
-                return Err(BlockFetchError::ChannelClosed);
-            }
-
-            while pool.queued_count() < concurrency && queued_height <= end_height {
-                if current_task.load(Ordering::SeqCst) != job_id {
-                    return Err(BlockFetchError::ChannelClosed);
-                }
-
-                let tx = tx.clone();
-                let rpc = rpc.clone();
-                let task_client = client.clone();
-                let task_sigterm = current_task.clone();
-
-                pool.execute(move || {
-                    if task_sigterm.load(Ordering::SeqCst) != job_id {
-                        return;
-                    }
-                    let result: Result<_, BitcoinRpcError> = (move || {
-                        let hash: BlockHash = rpc
-                            .send_json_blocking(&task_client, &rpc.get_block_hash(queued_height))?;
-                        let block = Self::fetch_block(&rpc, &task_client, &hash)?;
-                        Ok((
-                            queued_height,
-                            ChainAnchor {
-                                height: queued_height,
-                                hash,
-                            },
-                            block,
-                        ))
-                    })();
-
-                    _ = tx.send(result);
-                });
-
-                queued_height += 1;
-            }
-
-            // Check if any blocks are ready to emit
-            if let Ok(result) = rx.try_recv() {
-                if current_task.load(Ordering::SeqCst) != job_id {
-                    return Err(BlockFetchError::ChannelClosed);
-                }
-
-                let (height, id, block) = result?;
-                parsed_blocks.insert(height, (id, block));
-
-                // Emit blocks in order
-                while let Some((id, block)) = parsed_blocks.remove(&next_emit_height) {
-                    if current_task.load(Ordering::SeqCst) != job_id {
-                        return Err(BlockFetchError::ChannelClosed);
-                    }
-                    if block.header.prev_blockhash != previous_hash {
-                        return Err(BlockFetchError::BlockMismatch);
-                    }
-                    sender
-                        .send(BlockEvent::Block(id.clone(), block))
-                        .map_err(|_| BlockFetchError::ChannelClosed)?;
-                    previous_hash = id.hash;
-                    next_emit_height += 1;
-                }
-            }
-        }
-
-        Ok(ChainAnchor {
-            height: next_emit_height - 1,
-            hash: previous_hash,
-        })
+        workers.run()
     }
 
     pub fn fetch_block(
@@ -517,6 +452,129 @@ impl BlockFetcher {
                 BitcoinRpcError::Other(format!("Block Deserialize error: {}", e.to_string()))
             })?;
         Ok(block)
+    }
+}
+
+struct Workers {
+    current_job: Arc<AtomicUsize>,
+    job_id: usize,
+    out_of_order: BTreeMap<u32, (ChainAnchor, Block)>,
+    last_emitted: ChainAnchor,
+    queued_height: u32,
+    end_height: u32,
+    ordered_sender: std::sync::mpsc::SyncSender<BlockEvent>,
+    rpc: Arc<BitcoinRpc>,
+    concurrency: usize,
+    pool: ThreadPool,
+}
+
+type RpcBlockReceiver = Receiver<Result<(ChainAnchor, Block), BitcoinRpcError>>;
+
+impl Workers {
+    fn try_emit_next_block(
+        &mut self,
+        unordered: &RpcBlockReceiver,
+    ) -> Result<bool, BlockFetchError> {
+        while let Ok(unordered_block) = unordered.try_recv() {
+            if self.should_stop() {
+                return Err(BlockFetchError::ChannelClosed);
+            }
+            let (id, block) = unordered_block?;
+            self.out_of_order.insert(id.height, (id, block));
+        }
+
+        let next = self.last_emitted.height + 1;
+        if next > self.end_height {
+            return Ok(false);
+        }
+
+        if let Some((id, block)) = self.out_of_order.remove(&next) {
+            if self.should_stop() {
+                return Err(BlockFetchError::ChannelClosed);
+            }
+
+            if block.header.prev_blockhash != self.last_emitted.hash {
+                return Err(BlockFetchError::BlockMismatch);
+            }
+
+            self.last_emitted = id;
+            self.ordered_sender
+                .send(BlockEvent::Block(id.clone(), block))
+                .map_err(|_| BlockFetchError::ChannelClosed)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    #[inline(always)]
+    fn can_add_workers(&self) -> bool {
+        self.pool.queued_count() < self.concurrency && !self.queued_all()
+    }
+
+    #[inline(always)]
+    fn queued_all(&self) -> bool {
+        self.queued_height > self.end_height
+    }
+
+    fn run(&mut self) -> Result<ChainAnchor, BlockFetchError> {
+        let client = reqwest::blocking::Client::new();
+        let (tx, rx) = std::sync::mpsc::sync_channel(self.concurrency);
+
+        'queue_blocks: while !self.queued_all() {
+            if self.should_stop() {
+                return Err(BlockFetchError::ChannelClosed);
+            }
+
+            while self.can_add_workers() {
+                if self.should_stop() {
+                    return Err(BlockFetchError::ChannelClosed);
+                }
+                let tx = tx.clone();
+                let rpc = self.rpc.clone();
+                let task_client = client.clone();
+                let task_sigterm = self.current_job.clone();
+                let height = self.queued_height;
+                let job_id = self.job_id;
+
+                self.pool.execute(move || {
+                    if task_sigterm.load(Ordering::SeqCst) != job_id {
+                        return;
+                    }
+                    let result: Result<_, BitcoinRpcError> = (move || {
+                        let hash: BlockHash =
+                            rpc.send_json_blocking(&task_client, &rpc.get_block_hash(height))?;
+                        let block = BlockFetcher::fetch_block(&rpc, &task_client, &hash)?;
+                        Ok((ChainAnchor { height, hash }, block))
+                    })();
+                    _ = tx.send(result);
+                });
+                self.queued_height += 1;
+            }
+
+            // Emits any completed blocks while workers are processing
+            while self.try_emit_next_block(&rx)? {
+                // If pool has availability queue up more instead
+                if self.can_add_workers() {
+                    continue 'queue_blocks;
+                }
+            }
+
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        // Wait for all blocks to be processed
+        while self.pool.active_count() > 0 || self.last_emitted.height != self.end_height {
+            while self.try_emit_next_block(&rx)? {
+                // do nothing
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Ok(self.last_emitted)
+    }
+
+    #[inline(always)]
+    fn should_stop(&self) -> bool {
+        self.current_job.load(Ordering::SeqCst) != self.job_id
     }
 }
 
@@ -668,5 +726,58 @@ impl BlockSource for BitcoinBlockSource {
         Ok(self
             .rpc
             .send_json_blocking(&self.client, &self.rpc.get_block_count())?)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use protocol::{
+        bitcoin,
+        bitcoin::{BlockHash, Network},
+        constants::ChainAnchor,
+    };
+
+    use crate::source::{BitcoinRpc, BitcoinRpcAuth, BlockEvent, BlockFetcher};
+
+    #[test]
+    fn test_fetcher() -> anyhow::Result<()> {
+        let rpc = BitcoinRpc::new(
+            "http://127.0.0.1:18332",
+            BitcoinRpcAuth::UserPass("test".to_string(), "test".to_string()),
+        );
+
+        let client = reqwest::blocking::Client::new();
+        let count: u32 = rpc.send_json_blocking(&client, &rpc.get_block_count())?;
+
+        let start_block = count - 1;
+        let start_block_hash: BlockHash =
+            rpc.send_json_blocking(&client, &rpc.get_block_hash(start_block))?;
+
+        let (fetcher, receiver) = BlockFetcher::new(rpc, client);
+
+        println!("fetcher starting from block {}", start_block);
+
+        fetcher.start(ChainAnchor {
+            hash: start_block_hash,
+            height: start_block,
+        });
+
+        println!("fetcher receiving blocks");
+        while let Ok(event) = receiver.recv() {
+            match event {
+                BlockEvent::Block(id, _) => {
+                    println!("got block {}", id.height);
+                    if id.height >= count {
+                        break;
+                    }
+                }
+                BlockEvent::Error(e) => {
+                    println!("error: {}", e.to_string());
+                    break;
+                }
+            }
+        }
+
+        Ok(())
     }
 }
