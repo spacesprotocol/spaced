@@ -80,6 +80,9 @@ enum Commands {
         #[arg(default_value = "default")]
         name: String,
     },
+    /// Export a wallet
+    #[command(name = "getserverinfo")]
+    GetServerInfo,
     /// Open an auction
     Open {
         /// Space name
@@ -431,6 +434,10 @@ async fn handle_commands(
         }
         Commands::GetWalletInfo { name } => {
             let result = cli.client.wallet_get_info(name).await?;
+            println!("{}", serde_json::to_string_pretty(&result).expect("result"));
+        }
+        Commands::GetServerInfo => {
+            let result = cli.client.get_server_info().await?;
             println!("{}", serde_json::to_string_pretty(&result).expect("result"));
         }
         Commands::Open {
