@@ -324,7 +324,7 @@ impl BlockFetcher {
         self.job_id.fetch_add(1, Ordering::SeqCst);
     }
 
-    pub fn start(&self, mut start_block: ChainAnchor) {
+    pub fn start(&self, mut checkpoint: ChainAnchor) {
         self.stop();
 
         let job_id = self.job_id.load(Ordering::SeqCst);
@@ -357,20 +357,20 @@ impl BlockFetcher {
                         }
                     };
 
-                if tip > start_block.height {
+                if tip > checkpoint.height {
                     let res = Self::run_workers(
                         job_id,
                         current_task.clone(),
                         task_rpc.clone(),
                         task_sender.clone(),
-                        start_block,
+                        checkpoint,
                         tip,
                         num_workers,
                     );
 
                     match res {
                         Ok(new_tip) => {
-                            start_block = new_tip;
+                            checkpoint = new_tip;
                         }
                         Err(e) => {
                             _ = task_sender.send(BlockEvent::Error(e));
@@ -608,7 +608,7 @@ fn val(c: u8, idx: usize) -> Result<u8, FromHexError> {
 
 impl BitcoinRpcError {
     fn is_temporary(&self) -> bool {
-        return match self {
+        match self {
             BitcoinRpcError::Transport(e) => {
                 if e.is_timeout() || e.is_connect() {
                     return true;
@@ -635,7 +635,7 @@ impl BitcoinRpcError {
                 )
             }
             _ => false,
-        };
+        }
     }
 }
 
@@ -686,7 +686,7 @@ impl ErrorForRpcBlocking for reqwest::blocking::Response {
             return Err(BitcoinRpcError::Rpc(e));
         }
 
-        return Ok(rpc_res.result.unwrap());
+        Ok(rpc_res.result.unwrap())
     }
 }
 
@@ -735,11 +735,7 @@ impl BlockSource for BitcoinBlockSource {
 
 #[cfg(test)]
 mod test {
-    use protocol::{
-        bitcoin,
-        bitcoin::{BlockHash, Network},
-        constants::ChainAnchor,
-    };
+    use protocol::{bitcoin::BlockHash, constants::ChainAnchor};
 
     use crate::source::{BitcoinRpc, BitcoinRpcAuth, BlockEvent, BlockFetcher};
 
@@ -753,17 +749,17 @@ mod test {
         let client = reqwest::blocking::Client::new();
         let count: u32 = rpc.send_json_blocking(&client, &rpc.get_block_count())?;
 
-        let start_block = count - 1;
+        let checkpoint = count - 10;
         let start_block_hash: BlockHash =
-            rpc.send_json_blocking(&client, &rpc.get_block_hash(start_block))?;
+            rpc.send_json_blocking(&client, &rpc.get_block_hash(checkpoint))?;
 
         let (fetcher, receiver) = BlockFetcher::new(rpc, client, 8);
 
-        println!("fetcher starting from block {}", start_block);
+        println!("fetcher checkpoint block {}", checkpoint);
 
         fetcher.start(ChainAnchor {
             hash: start_block_hash,
-            height: start_block,
+            height: checkpoint,
         });
 
         println!("fetcher receiving blocks");
