@@ -36,6 +36,7 @@ pub struct Spaced {
     pub rpc: BitcoinRpc,
     pub data_dir: PathBuf,
     pub bind: Vec<SocketAddr>,
+    pub num_workers: usize,
 }
 
 impl Spaced {
@@ -155,7 +156,7 @@ impl Spaced {
 
         let rpc = source.rpc.clone();
         let client = reqwest::blocking::Client::new();
-        let (fetcher, receiver) = BlockFetcher::new(rpc.clone(), client.clone());
+        let (fetcher, receiver) = BlockFetcher::new(rpc.clone(), client.clone(), self.num_workers);
         fetcher.start(start_block);
 
         let mut shutdown_signal = shutdown.subscribe();

@@ -47,6 +47,9 @@ pub struct Args {
     /// Network to use
     #[arg(long, env = "SPACED_CHAIN")]
     chain: ExtendedNetwork,
+    /// Number of concurrent workers allowed during syncing
+    #[arg(short, long, env = "SPACED_JOBS", default_value = "8")]
+    jobs: u8,
     /// Bitcoin RPC URL
     #[arg(long, env = "SPACED_BITCOIN_RPC_URL")]
     bitcoin_rpc_url: Option<String>,
@@ -68,7 +71,6 @@ pub struct Args {
     #[arg(long, help_heading = Some(RPC_OPTIONS), default_values = ["127.0.0.1", "::1"], env = "SPACED_RPC_BIND")]
     rpc_bind: Vec<String>,
     /// Listen for JSON-RPC connections on <port>
-    /// (default: 22220, testnet: 22221, signet: 22224, regtest: 22226)
     #[arg(long, help_heading = Some(RPC_OPTIONS), env = "SPACED_RPC_PORT")]
     rpc_port: Option<u16>,
 }
@@ -183,6 +185,7 @@ impl Args {
             bind: rpc_bind_addresses,
             chain,
             block_index,
+            num_workers: args.jobs as usize,
         })
     }
 

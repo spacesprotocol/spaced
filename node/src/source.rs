@@ -38,6 +38,7 @@ pub struct BlockFetcher {
     rpc: Arc<BitcoinRpc>,
     job_id: Arc<AtomicUsize>,
     sender: std::sync::mpsc::SyncSender<BlockEvent>,
+    num_workers: usize,
 }
 
 pub enum BlockEvent {
@@ -304,6 +305,7 @@ impl BlockFetcher {
     pub fn new(
         rpc: BitcoinRpc,
         client: reqwest::blocking::Client,
+        num_workers: usize,
     ) -> (Self, std::sync::mpsc::Receiver<BlockEvent>) {
         let (tx, rx) = std::sync::mpsc::sync_channel(12);
         (
@@ -312,6 +314,7 @@ impl BlockFetcher {
                 rpc: Arc::new(rpc),
                 job_id: Arc::new(AtomicUsize::new(0)),
                 sender: tx,
+                num_workers,
             },
             rx,
         )
@@ -329,6 +332,7 @@ impl BlockFetcher {
         let task_rpc = self.rpc.clone();
         let current_task = self.job_id.clone();
         let task_sender = self.sender.clone();
+        let num_workers = self.num_workers;
 
         _ = std::thread::spawn(move || {
             let mut last_check = Instant::now() - Duration::from_secs(2);
@@ -354,8 +358,6 @@ impl BlockFetcher {
                     };
 
                 if tip > start_block.height {
-                    let concurrency = std::cmp::min(tip - start_block.height, 8);
-
                     let res = Self::run_workers(
                         job_id,
                         current_task.clone(),
@@ -363,7 +365,7 @@ impl BlockFetcher {
                         task_sender.clone(),
                         start_block,
                         tip,
-                        concurrency as usize,
+                        num_workers,
                     );
 
                     match res {
@@ -388,7 +390,7 @@ impl BlockFetcher {
         sender: std::sync::mpsc::SyncSender<BlockEvent>,
         start_block: ChainAnchor,
         end_height: u32,
-        concurrency: usize,
+        num_workers: usize,
     ) -> Result<ChainAnchor, BlockFetchError> {
         let mut workers = Workers {
             current_job,
@@ -399,8 +401,8 @@ impl BlockFetcher {
             end_height,
             ordered_sender: sender,
             rpc,
-            concurrency,
-            pool: ThreadPool::new(concurrency),
+            num_workers,
+            pool: ThreadPool::new(num_workers),
         };
 
         workers.run()
@@ -464,7 +466,7 @@ struct Workers {
     end_height: u32,
     ordered_sender: std::sync::mpsc::SyncSender<BlockEvent>,
     rpc: Arc<BitcoinRpc>,
-    concurrency: usize,
+    num_workers: usize,
     pool: ThreadPool,
 }
 
@@ -508,7 +510,9 @@ impl Workers {
 
     #[inline(always)]
     fn can_add_workers(&self) -> bool {
-        self.pool.queued_count() < self.concurrency && !self.queued_all()
+        self.out_of_order.len() < self.num_workers
+            && self.pool.queued_count() < self.num_workers
+            && !self.queued_all()
     }
 
     #[inline(always)]
@@ -518,7 +522,7 @@ impl Workers {
 
     fn run(&mut self) -> Result<ChainAnchor, BlockFetchError> {
         let client = reqwest::blocking::Client::new();
-        let (tx, rx) = std::sync::mpsc::sync_channel(self.concurrency);
+        let (tx, rx) = std::sync::mpsc::sync_channel(self.num_workers);
 
         'queue_blocks: while !self.queued_all() {
             if self.should_stop() {
@@ -559,7 +563,7 @@ impl Workers {
                 }
             }
 
-            std::thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(1));
         }
 
         // Wait for all blocks to be processed
@@ -567,7 +571,7 @@ impl Workers {
             while self.try_emit_next_block(&rx)? {
                 // do nothing
             }
-            std::thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(1));
         }
         Ok(self.last_emitted)
     }
@@ -753,7 +757,7 @@ mod test {
         let start_block_hash: BlockHash =
             rpc.send_json_blocking(&client, &rpc.get_block_hash(start_block))?;
 
-        let (fetcher, receiver) = BlockFetcher::new(rpc, client);
+        let (fetcher, receiver) = BlockFetcher::new(rpc, client, 8);
 
         println!("fetcher starting from block {}", start_block);
 

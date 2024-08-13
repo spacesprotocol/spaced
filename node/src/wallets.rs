@@ -282,8 +282,10 @@ impl RpcWallet {
         mut wallet: SpacesWallet,
         mut commands: Receiver<WalletCommand>,
         mut shutdown: broadcast::Receiver<()>,
+        num_workers: usize,
     ) -> anyhow::Result<()> {
-        let (fetcher, receiver) = BlockFetcher::new(source.rpc.clone(), source.client.clone());
+        let (fetcher, receiver) =
+            BlockFetcher::new(source.rpc.clone(), source.client.clone(), num_workers);
 
         let mut wallet_tip = {
             let tip = wallet.coins.local_chain().tip();
@@ -706,6 +708,7 @@ impl RpcWallet {
         store: LiveSnapshot,
         mut channel: Receiver<LoadedWallet>,
         shutdown: broadcast::Sender<()>,
+        num_workers: usize,
     ) -> anyhow::Result<()> {
         let mut shutdown_signal = shutdown.subscribe();
         let mut wallet_results = FuturesUnordered::new();
@@ -734,7 +737,8 @@ impl RpcWallet {
                                 wallet_chain,
                                 loaded.wallet,
                                 loaded.rx,
-                                wallet_shutdown
+                                wallet_shutdown,
+                                num_workers
                             ));
                         });
                         wallet_results.push(named_future(wallet_name, rx));

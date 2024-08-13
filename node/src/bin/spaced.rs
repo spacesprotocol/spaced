@@ -60,6 +60,7 @@ impl Composer {
             spaced.chain.state.clone(),
             rx,
             self.shutdown.clone(),
+            spaced.num_workers,
         );
 
         self.services.spawn(async move {
