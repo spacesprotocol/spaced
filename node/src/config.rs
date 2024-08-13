@@ -354,8 +354,8 @@ pub fn default_spaces_rpc_port(chain: &ExtendedNetwork) -> u16 {
     match chain {
         ExtendedNetwork::Mainnet => 7225,
         ExtendedNetwork::Testnet4 => 7224,
-        ExtendedNetwork::Signet => 7223,
-        ExtendedNetwork::Testnet => 7221,
+        ExtendedNetwork::Testnet => 7223,
+        ExtendedNetwork::Signet => 7221,
         ExtendedNetwork::Regtest => 7218,
     }
 }
