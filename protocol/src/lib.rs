@@ -7,60 +7,30 @@ pub extern crate bitcoin;
 
 #[cfg(feature = "bincode")]
 use bincode::{Decode, Encode};
-
+use bitcoin::{
+    psbt,
+    secp256k1::{schnorr, Message},
+    sighash::{Prevouts, SighashCache, TapSighashType},
+    taproot,
+    transaction::Version,
+    Amount, OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Witness,
+};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+use crate::{
+    constants::{BID_PSBT_INPUT_SEQUENCE, BID_PSBT_TX_LOCK_TIME, BID_PSBT_TX_VERSION},
+    sname::SName,
+};
 
-use bitcoin::{Amount, OutPoint, psbt, ScriptBuf, Sequence, taproot, Transaction, TxIn, TxOut, Witness};
-use bitcoin::absolute::{Height, LockTime};
-use bitcoin::secp256k1::{Message, schnorr};
-use bitcoin::sighash::{Prevouts, SighashCache, TapSighashType};
-use bitcoin::transaction::Version;
-
-use crate::hasher::Hash;
-use crate::sname::SName;
-
-pub mod hasher;
+pub mod constants;
 pub mod errors;
-pub mod sname;
-pub mod prepare;
-pub mod validate;
+pub mod hasher;
 pub mod opcodes;
+pub mod prepare;
 pub mod script;
-
-pub const BID_PSBT_TX_VERSION: i32 = 2;
-pub const BID_PSBT_TX_LOCK_TIME: LockTime = LockTime::Blocks(Height::ZERO);
-pub const BID_PSBT_INPUT_SEQUENCE: Sequence = Sequence::ENABLE_RBF_NO_LOCKTIME;
-
-/// Represents the Spaces protocol configurable parameters.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Params {
-    /// Represents the block hash at which the protocol is activated.
-    pub activation_block: Hash,
-
-    ///  Represents the block height at which the protocol is activated.
-    pub activation_block_height: u32,
-
-    /// The frequency at which new spaces are released for auction.
-    pub rollout_block_interval: u16,
-
-    /// The number of spaces to be rolled out at each block interval.
-    /// It specifies the quantity of names made available for auction in each rollout.
-    pub rollout_batch_size: u16,
-
-    /// The number of blocks for the auction phase for each name before it can be safely registered
-    /// by the winning bidder.
-    pub auction_block_interval: u16,
-
-    /// The number of blocks to extend the auction if a bid
-    /// is placed towards the end of an auction.
-    pub auction_bid_extension: u16,
-
-    /// Space holder must prove continued ownership by refreshing the space
-    /// through transfers every specified number of blocks.
-    pub space_refresh_block_interval: u16,
-}
+pub mod sname;
+pub mod validate;
 
 #[derive(Clone, PartialEq, Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -142,7 +112,7 @@ pub enum Covenant {
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
-#[cfg_attr(feature = "serde", serde(rename_all ="snake_case"))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum RevokeReason {
     BidPsbt(BidPsbtReason),
     /// Space was prematurely spent during the auctions phase
@@ -174,10 +144,8 @@ pub enum BidPsbtReason {
 impl Space {
     pub fn is_expired(&self, height: u32) -> bool {
         match self.covenant {
-            Covenant::Transfer { expire_height, .. } => {
-                expire_height < height
-            }
-            _ => return false
+            Covenant::Transfer { expire_height, .. } => expire_height < height,
+            _ => return false,
         }
     }
 
@@ -193,43 +161,38 @@ impl Space {
     }
 
     pub fn is_bid_spend(&self, tx_version: i32, txin: &TxIn) -> bool {
-        if tx_version != BID_PSBT_TX_VERSION ||
-            txin.sequence != BID_PSBT_INPUT_SEQUENCE ||
-            txin.witness.len() != 1 ||
-            txin.witness[0].len() != 65 ||
-            txin.witness[0][64] != TapSighashType::SinglePlusAnyoneCanPay as u8 {
+        if tx_version != BID_PSBT_TX_VERSION
+            || txin.sequence != BID_PSBT_INPUT_SEQUENCE
+            || txin.witness.len() != 1
+            || txin.witness[0].len() != 65
+            || txin.witness[0][64] != TapSighashType::SinglePlusAnyoneCanPay as u8
+        {
             return false;
         }
 
         match &self.covenant {
-            Covenant::Bid { signature, .. } => {
-                &txin.witness[0][..64] == signature.as_ref()
-            }
-            _ => false
+            Covenant::Bid { signature, .. } => &txin.witness[0][..64] == signature.as_ref(),
+            _ => false,
         }
     }
 
     pub fn data(&self) -> Option<&[u8]> {
         match &self.covenant {
-            Covenant::Transfer { data, .. } => {
-                match &data {
-                    None => None,
-                    Some(data) => Some(data.as_slice())
-                }
-            }
-            _ => None
+            Covenant::Transfer { data, .. } => match &data {
+                None => None,
+                Some(data) => Some(data.as_slice()),
+            },
+            _ => None,
         }
     }
 
     pub fn data_owned(&self) -> Option<Vec<u8>> {
         match &self.covenant {
-            Covenant::Transfer { data, .. } => {
-                match &data {
-                    None => None,
-                    Some(data) => Some(data.clone())
-                }
-            }
-            _ => None
+            Covenant::Transfer { data, .. } => match &data {
+                None => None,
+                Some(data) => Some(data.clone()),
+            },
+            _ => None,
         }
     }
 }
@@ -253,12 +216,12 @@ impl FullSpaceOut {
             TapSighashType::SinglePlusAnyoneCanPay,
         ) {
             Ok(sighash) => sighash,
-            Err(_) => return false
+            Err(_) => return false,
         };
 
         let msg = match Message::from_digest_slice(sighash.as_ref()) {
             Ok(msg) => msg,
-            Err(_) => return false
+            Err(_) => return false,
         };
 
         let ctx = bitcoin::secp256k1::Secp256k1::verification_only();
@@ -267,7 +230,7 @@ impl FullSpaceOut {
 
         let pubkey = match bitcoin::XOnlyPublicKey::from_slice(&script_bytes[2..]) {
             Ok(pubkey) => pubkey,
-            Err(_) => return false
+            Err(_) => return false,
         };
 
         let schnorr_sig = match schnorr::Signature::from_slice(signature.as_ref()) {
@@ -278,22 +241,33 @@ impl FullSpaceOut {
         ctx.verify_schnorr(&schnorr_sig, &msg, &pubkey).is_ok()
     }
 
-    pub fn refund_signing_info(&self) -> Option<(Transaction, Prevouts<TxOut>, schnorr::Signature)> {
+    pub fn refund_signing_info(
+        &self,
+    ) -> Option<(Transaction, Prevouts<TxOut>, schnorr::Signature)> {
         if self.spaceout.space.is_none() {
             return None;
         }
 
         match &self.spaceout.space.as_ref().unwrap().covenant {
-            Covenant::Bid { total_burned, signature, .. } => {
+            Covenant::Bid {
+                total_burned,
+                signature,
+                ..
+            } => {
                 let refund_amount = self.spaceout.value + *total_burned;
-                Some((Self::bid_psbt_tx(self, refund_amount, signature), Prevouts::One(0, TxOut {
-                    value: self.spaceout.value,
-                    script_pubkey: self.spaceout.script_pubkey.clone(),
-                }), signature.clone()))
+                Some((
+                    Self::bid_psbt_tx(self, refund_amount, signature),
+                    Prevouts::One(
+                        0,
+                        TxOut {
+                            value: self.spaceout.value,
+                            script_pubkey: self.spaceout.script_pubkey.clone(),
+                        },
+                    ),
+                    signature.clone(),
+                ))
             }
-            _ => {
-                None
-            }
+            _ => None,
         }
     }
 
@@ -303,14 +277,19 @@ impl FullSpaceOut {
         }
 
         match &self.spaceout.space.as_ref().unwrap().covenant {
-            Covenant::Bid { total_burned, signature, .. } => {
+            Covenant::Bid {
+                total_burned,
+                signature,
+                ..
+            } => {
                 let refund_amount = self.spaceout.value + *total_burned;
                 let mut witness = Witness::default();
                 witness.push(
                     taproot::Signature {
-                        sig: signature.clone(),
-                        hash_ty: TapSighashType::SinglePlusAnyoneCanPay,
-                    }.to_vec()
+                        signature: signature.clone(),
+                        sighash_type: TapSighashType::SinglePlusAnyoneCanPay,
+                    }
+                    .to_vec(),
                 );
 
                 let refund_txout = TxOut {
@@ -341,9 +320,10 @@ impl FullSpaceOut {
         let mut witness = Witness::default();
         witness.push(
             taproot::Signature {
-                sig: signature.clone(),
-                hash_ty: TapSighashType::SinglePlusAnyoneCanPay,
-            }.to_vec()
+                signature: signature.clone(),
+                sighash_type: TapSighashType::SinglePlusAnyoneCanPay,
+            }
+            .to_vec(),
         );
 
         let tx = Transaction {
@@ -355,12 +335,10 @@ impl FullSpaceOut {
                 witness,
                 ..Default::default()
             }],
-            output: vec![
-                TxOut {
-                    value: refund_amount,
-                    script_pubkey: auctioned_utxo.spaceout.script_pubkey.clone(),
-                }
-            ],
+            output: vec![TxOut {
+                value: refund_amount,
+                script_pubkey: auctioned_utxo.spaceout.script_pubkey.clone(),
+            }],
         };
         tx
     }

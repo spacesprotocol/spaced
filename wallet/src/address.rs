@@ -1,13 +1,15 @@
-use protocol::bitcoin::address::{Address, ParseError, Payload};
-use protocol::bitcoin::bech32::{Hrp};
-use protocol::bitcoin::network::Network;
-use core::str::FromStr;
-use protocol::bitcoin::{bech32, ScriptBuf, WitnessProgram};
-use core::fmt;
-use bdk::bitcoin::bech32::primitives::decode::{SegwitHrpstringError};
-use protocol::bitcoin;
-use protocol::bitcoin::script::PushBytesBuf;
+use core::{fmt, str::FromStr};
+
+use bech32::{primitives::decode::SegwitHrpstringError, Hrp};
 use bitcoin::blockdata::script::witness_version::WitnessVersion;
+use protocol::{
+    bitcoin,
+    bitcoin::{
+        address::{Address, ParseError},
+        network::Network,
+        ScriptBuf, WitnessProgram,
+    },
+};
 
 #[derive(Debug, Clone)]
 pub struct SpaceAddress(pub Address);
@@ -20,25 +22,20 @@ impl SpaceAddress {
 
 impl fmt::Display for SpaceAddress {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        let pubkey = self.0.script_pubkey();
-        let raw_program = &pubkey.as_bytes()[2..];
-        let program = WitnessProgram::new(WitnessVersion::V1, raw_program.to_vec())
-            .expect("p2tr address");
-
-        let hrp = Hrp::parse(match self.0.network() {
-            Network::Bitcoin => "bcs",
-            Network::Testnet | Network::Signet  => "tbs",
-            Network::Regtest => "bcrts",
-            _ => "tbs"
-        }).expect("valid hrp");
+        // let pubkey = self.0.script_pubkey();
+        // let raw_program = &pubkey.as_bytes()[2..];
+        let program = self.0.witness_program().expect("p2tr address");
+        let address = self.0.to_string();
+        let hrp = find_bech32_prefix(&address);
+        let hrp = Hrp::parse(&format!("{}s", hrp)).expect("valid hrp");
 
         let version = program.version().to_fe();
         let program = program.program().as_ref();
 
         if fmt.alternate() {
-            bech32::segwit::encode_upper_to_fmt_unchecked(fmt, &hrp, version, program)
+            bech32::segwit::encode_upper_to_fmt_unchecked(fmt, hrp, version, program)
         } else {
-            bech32::segwit::encode_lower_to_fmt_unchecked(fmt, &hrp, version, program)
+            bech32::segwit::encode_lower_to_fmt_unchecked(fmt, hrp, version, program)
         }
     }
 }
@@ -54,24 +51,28 @@ impl FromStr for SpaceAddress {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         // try bech32
-        let bech32_network = match find_bech32_prefix(s) {
+        let bech32_prefix = find_bech32_prefix(s);
+        let network = match bech32_prefix {
             // note that upper or lowercase is allowed but NOT mixed case
             "bcs" | "BCS" => Some(Network::Bitcoin),
-            "tbs" | "TBS" => Some(Network::Testnet), // this may also be signet
+            "tbs" | "TBS" => Some(Network::Testnet),
             "bcrts" | "BCRTS" => Some(Network::Regtest),
             _ => None,
         };
-        if let Some(network) = bech32_network {
+
+        if let Some(network) = network {
             let (_hrp, version, data) = bech32::segwit::decode(s)?;
 
             let version = WitnessVersion::try_from(version).expect("we know this is in range 0-16");
-            let program = PushBytesBuf::try_from(data).expect("decode() guarantees valid length");
-            let witness_program = WitnessProgram::new(version, program)?;
+            let witness_program = WitnessProgram::new(version, data.as_slice())?;
 
-            return Ok(SpaceAddress(Address::new(network, Payload::WitnessProgram(witness_program))));
+            return Ok(SpaceAddress(Address::from_witness_program(
+                witness_program,
+                network,
+            )));
         }
 
-        Err(ParseError::Bech32(SegwitHrpstringError::MissingWitnessVersion.into()))
+        Err(ParseError::Bech32(SegwitHrpstringError::NoData.into()))
     }
 }
 

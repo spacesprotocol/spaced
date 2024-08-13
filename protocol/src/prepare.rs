@@ -1,13 +1,17 @@
-use bitcoin::{Amount, OutPoint, Transaction, Txid, TxIn, TxOut};
-use bitcoin::absolute::LockTime;
-use bitcoin::opcodes::all::OP_RETURN;
-use bitcoin::secp256k1::{schnorr};
-use bitcoin::secp256k1::schnorr::Signature;
-use bitcoin::transaction::Version;
-use crate::hasher::{KeyHasher, SpaceHash};
-use crate::{SpaceOut};
-use crate::errors::Result;
-use crate::script::{ScriptMachine, ScriptResult};
+use bitcoin::{
+    absolute::LockTime,
+    opcodes::all::OP_RETURN,
+    secp256k1::{schnorr, schnorr::Signature},
+    transaction::Version,
+    Amount, OutPoint, Transaction, TxIn, TxOut, Txid,
+};
+
+use crate::{
+    errors::Result,
+    hasher::{KeyHasher, SpaceHash},
+    script::{ScriptMachine, ScriptResult},
+    SpaceOut,
+};
 
 const COMPRESSED_PSBT_SIZE: usize = 65;
 
@@ -16,7 +20,6 @@ pub struct BidPsbt {
     pub(crate) signature: Signature,
     pub(crate) burn_amount: Amount,
 }
-
 
 /// A subset of a Bitcoin transaction relevant to the Spaces protocol
 /// along with all the data necessary to validate it.
@@ -61,9 +64,11 @@ pub struct AuctionedOutput {
     pub bid_psbt: BidPsbt,
 }
 
-
 pub trait DataSource {
-    fn get_space_outpoint(&mut self, space_hash: &SpaceHash) -> crate::errors::Result<Option<OutPoint>>;
+    fn get_space_outpoint(
+        &mut self,
+        space_hash: &SpaceHash,
+    ) -> crate::errors::Result<Option<OutPoint>>;
 
     fn get_spaceout(&mut self, outpoint: &OutPoint) -> crate::errors::Result<Option<SpaceOut>>;
 }
@@ -97,14 +102,21 @@ impl PreparedTransaction {
     ///
     /// Returns `Some(PreparedTransaction)` if the transaction is relevant to the Spaces protocol.
     /// Returns `None` if the transaction is not relevant.
-    pub fn from_tx<T: DataSource, H: KeyHasher>(src: &mut T, tx: Transaction) -> Result<Option<PreparedTransaction>> {
+    pub fn from_tx<T: DataSource, H: KeyHasher>(
+        src: &mut T,
+        tx: Transaction,
+    ) -> Result<Option<PreparedTransaction>> {
         if !Self::spending_space_in(src, &tx)? {
             if tx.is_magic_output() {
                 return Ok(Some(PreparedTransaction {
                     version: tx.version,
                     lock_time: tx.lock_time,
-                    txid: tx.txid(),
-                    inputs: tx.input.into_iter().map(|input| FullTxIn::CoinIn(input)).collect(),
+                    txid: tx.compute_txid(),
+                    inputs: tx
+                        .input
+                        .into_iter()
+                        .map(|input| FullTxIn::CoinIn(input))
+                        .collect(),
                     outputs: tx.output,
                     // even if such an output exists, it can be ignored
                     // as there's no spends of existing space outputs
@@ -120,17 +132,17 @@ impl PreparedTransaction {
             Some(out) => Some(AuctionedOutput {
                 output: src.get_spaceout(&out.outpoint)?,
                 bid_psbt: out,
-            })
+            }),
         };
 
-        let txid = tx.txid();
+        let txid = tx.compute_txid();
         for input in tx.input.into_iter() {
             let spaceout = match src.get_spaceout(&input.previous_output)? {
                 None => {
                     inputs.push(FullTxIn::CoinIn(input));
                     continue;
                 }
-                Some(out) => out
+                Some(out) => out,
             };
 
             let sstxo = SSTXO {
@@ -162,13 +174,14 @@ impl PreparedTransaction {
 
     /// Carried PSBT must be the first output in a transaction
     fn get_bid_psbt(tx: &Transaction) -> Option<BidPsbt> {
-        if tx.input.is_empty() || tx.output.is_empty() || !tx.output[0].script_pubkey.is_op_return() {
+        if tx.input.is_empty() || tx.output.is_empty() || !tx.output[0].script_pubkey.is_op_return()
+        {
             return None;
         }
 
         let cpsbt = match Self::cpsbt_from_script(tx.output[0].script_pubkey.as_bytes()) {
             None => return None,
-            Some(c) => c
+            Some(c) => c,
         };
 
         let bid = BidPsbt {
@@ -183,7 +196,9 @@ impl PreparedTransaction {
     }
 
     fn cpsbt_from_script(script: &[u8]) -> Option<CPsbt> {
-        if script.len() != COMPRESSED_PSBT_SIZE + 2 /* 1-byte OP_RETURN + 1-byte len */ {
+        if script.len() != COMPRESSED_PSBT_SIZE + 2
+        /* 1-byte OP_RETURN + 1-byte len */
+        {
             return None;
         }
         if script[0] != OP_RETURN.to_u8() {
@@ -197,7 +212,7 @@ impl PreparedTransaction {
             vout: cpsbt[0],
             signature: match schnorr::Signature::from_slice(&cpsbt[1..]) {
                 Ok(sig) => sig,
-                Err(_) => return None
+                Err(_) => return None,
             },
         };
         Some(cpsbt)

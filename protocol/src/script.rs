@@ -2,22 +2,25 @@ use alloc::collections::btree_map::BTreeMap;
 
 #[cfg(feature = "bincode")]
 use bincode::{Decode, Encode};
-
+use bitcoin::{
+    consensus::{Decodable, Encodable},
+    opcodes::{
+        all::{OP_DROP, OP_ENDIF, OP_IF},
+        OP_FALSE,
+    },
+    script::{Instruction, Instructions, PushBytesBuf},
+    Script, VarInt,
+};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use bitcoin::script::{Instruction, Instructions, PushBytesBuf};
-use bitcoin::{ Script, VarInt};
-use bitcoin::consensus::{Decodable, Encodable};
-use bitcoin::opcodes::all::{OP_DROP, OP_ENDIF, OP_IF};
-use bitcoin::opcodes::OP_FALSE;
-
-use crate::hasher::{KeyHasher, SpaceHash};
-use crate::opcodes::*;
-use crate::sname::{NameLike, SName, SNameRef};
-use crate::{FullSpaceOut};
-use crate::opcodes::SpaceOpcode;
-use crate::prepare::{DataSource};
+use crate::{
+    hasher::{KeyHasher, SpaceHash},
+    opcodes::{SpaceOpcode, *},
+    prepare::DataSource,
+    sname::{NameLike, SName, SNameRef},
+    FullSpaceOut,
+};
 
 pub const MAGIC: &[u8] = &[0xde, 0xde, 0xde, 0xde];
 pub const MAGIC_LEN: usize = MAGIC.len();
@@ -29,13 +32,13 @@ pub struct ScriptMachine {
     pub open: Option<OpOpenContext>,
     pub default_sdata: Option<Vec<u8>>,
     pub sdata: BTreeMap<u8, Vec<u8>>,
-    pub reserve: bool
+    pub reserve: bool,
 }
 
 #[derive(Clone, Debug)]
 pub struct OpOpenContext {
     // Whether its attempting to open a new space or an existing one
-    pub spaceout: SpaceKind
+    pub spaceout: SpaceKind,
 }
 
 #[derive(Clone, Debug)]
@@ -76,13 +79,13 @@ pub enum SpaceInstruction<'a> {
 impl ScriptMachine {
     fn op_open<T: DataSource, H: KeyHasher>(
         src: &mut T,
-        stack: &mut Vec<Vec<&[u8]>>
+        stack: &mut Vec<Vec<&[u8]>>,
     ) -> crate::errors::Result<ScriptResult<OpOpenContext>> {
         let name = match stack.pop() {
             None => return Ok(Err(ScriptError::EarlyEndOfScript)),
             Some(slices) => {
                 if slices.len() != 1 {
-                    return Ok(Err(ScriptError::EarlyEndOfScript))
+                    return Ok(Err(ScriptError::EarlyEndOfScript));
                 }
                 let name = SNameRef::try_from(slices[0]);
                 if name.is_err() {
@@ -96,7 +99,6 @@ impl ScriptMachine {
             }
         };
 
-
         let spaceout = {
             let spacehash = SpaceHash::from(H::hash(name.to_bytes()));
             let existing = src.get_space_outpoint(&spacehash)?;
@@ -104,20 +106,18 @@ impl ScriptMachine {
                 None => SpaceKind::NewSpace(name.to_owned()),
                 Some(outpoint) => SpaceKind::ExistingSpace(FullSpaceOut {
                     outpoint,
-                    spaceout:  src.get_spaceout(&outpoint)?.expect("spaceout exists"),
-                })
+                    spaceout: src.get_spaceout(&outpoint)?.expect("spaceout exists"),
+                }),
             }
         };
 
-        let open = Ok(OpOpenContext {
-            spaceout,
-        });
+        let open = Ok(OpOpenContext { spaceout });
         Ok(open)
     }
 
     pub fn execute<T: DataSource, H: KeyHasher>(
         src: &mut T,
-        script: &Script
+        script: &Script,
     ) -> crate::errors::Result<Result<Self, ScriptError>> {
         let mut machine = Self {
             open: None,
@@ -138,13 +138,13 @@ impl ScriptMachine {
                 SpaceInstruction::Op(op) => {
                     match op.code {
                         OP_OPEN => {
-                            let open_result = Self::op_open::<T, H>(src,  &mut stack)?;
+                            let open_result = Self::op_open::<T, H>(src, &mut stack)?;
                             if open_result.is_err() {
                                 return Ok(Err(open_result.unwrap_err()));
                             }
 
                             machine.open = Some(open_result.unwrap());
-                        },
+                        }
                         OP_SET => {
                             let slices = stack.pop();
                             match slices {
@@ -167,7 +167,7 @@ impl ScriptMachine {
                                     machine.sdata.insert(vout, data);
                                 }
                             }
-                        },
+                        }
                         OP_SETALL => {
                             let slices = stack.pop();
                             match slices {
@@ -179,12 +179,12 @@ impl ScriptMachine {
                                     machine.default_sdata = Some(slices[0].to_vec());
                                 }
                             }
-                        },
+                        }
                         // all reserved op codes
                         OP_RESERVED_1E..=OP_RESERVED_FF => {
                             machine.reserve = true;
                             return Ok(Ok(machine));
-                        },
+                        }
                         OP_PUSH => panic!("must be handled by push bytes"),
                         _ => {
                             // nop
@@ -197,7 +197,6 @@ impl ScriptMachine {
         Ok(Ok(machine))
     }
 }
-
 
 impl SpaceScript for Script {
     fn space_instructions(&self) -> SpaceInstructions {
@@ -227,7 +226,8 @@ impl ScriptBuilder {
         let varint_len = VarInt(data.len() as u64);
         self.0.reserve(varint_len.size());
 
-        varint_len.consensus_encode(&mut self.0)
+        varint_len
+            .consensus_encode(&mut self.0)
             .expect("should encode");
 
         self.0.extend_from_slice(data);
@@ -240,21 +240,31 @@ impl ScriptBuilder {
         let mut data = Vec::with_capacity(MAGIC_LEN + script_varint.size() + script_len);
 
         data.extend_from_slice(MAGIC);
-        script_varint.consensus_encode(&mut data).expect("should encode");
+        script_varint
+            .consensus_encode(&mut data)
+            .expect("should encode");
 
         data.extend_from_slice(self.0.as_slice());
 
         let mut builder = bitcoin::script::Builder::new();
 
         if data.len() <= bitcoin::blockdata::constants::MAX_SCRIPT_ELEMENT_SIZE {
-            builder = builder.push_slice(
-                PushBytesBuf::try_from(data).expect("push bytes").as_push_bytes()
-            ).push_opcode(OP_DROP);
+            builder = builder
+                .push_slice(
+                    PushBytesBuf::try_from(data)
+                        .expect("push bytes")
+                        .as_push_bytes(),
+                )
+                .push_opcode(OP_DROP);
         } else {
             let chunks = data.chunks(bitcoin::blockdata::constants::MAX_SCRIPT_ELEMENT_SIZE);
             builder = builder.push_opcode(OP_FALSE).push_opcode(OP_IF);
             for chunk in chunks {
-                builder = builder.push_slice(PushBytesBuf::try_from(chunk.to_vec()).expect("push bytes").as_push_bytes());
+                builder = builder.push_slice(
+                    PushBytesBuf::try_from(chunk.to_vec())
+                        .expect("push bytes")
+                        .as_push_bytes(),
+                );
             }
             builder = builder.push_opcode(OP_ENDIF);
         }
@@ -383,9 +393,10 @@ impl<'a> Iterator for SpaceInstructions<'a> {
                 data = &data[1..];
 
                 let push_bytes_len = match VarInt::consensus_decode(&mut data)
-                    .map_err(|_| ScriptError::ExpectedValidVarInt) {
+                    .map_err(|_| ScriptError::ExpectedValidVarInt)
+                {
                     Ok(b) => b,
-                    Err(err) => return Some(Err(err))
+                    Err(err) => return Some(Err(err)),
                 };
 
                 self.push_len = push_bytes_len.0;
@@ -406,13 +417,16 @@ impl<'a> Iterator for SpaceInstructions<'a> {
 
 #[cfg(test)]
 mod tests {
-    use crate::opcodes::{OP_OPEN, OP_PUSH, OP_RESERVED_1E};
-    use crate::script::{SpaceInstruction, SpaceInstructions, ScriptBuilder};
+    use crate::{
+        opcodes::{OP_OPEN, OP_RESERVED_1E},
+        script::{ScriptBuilder, SpaceInstruction, SpaceInstructions},
+    };
 
     #[test]
-    fn test_stuff() {
-        let mut b = ScriptBuilder::new();
-        let script = b.push_opcode(OP_OPEN.into())
+    fn test_builder() {
+        let b = ScriptBuilder::new();
+        let script = b
+            .push_opcode(OP_OPEN.into())
             .push_slice("data 1".as_bytes())
             .push_slice("data 2".as_bytes())
             .push_opcode(OP_OPEN.into())
@@ -445,7 +459,6 @@ mod tests {
     }
 }
 
-
 /// Ways that a script might fail. Not everything is split up as
 /// much as it could be; patches welcome if more detailed errors
 /// would help you.
@@ -462,7 +475,7 @@ pub enum ScriptError {
     /// invalid/malformed during OP_OPEN
     UnexpectedLabelCount,
     TooManyItems,
-    MultiOpen
+    MultiOpen,
 }
 
 impl core::fmt::Display for ScriptError {

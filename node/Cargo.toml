@@ -1,6 +1,6 @@
 [package]
 name = "spaced"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 
 
@@ -16,9 +16,6 @@ path = "src/bin/spaced.rs"
 path = "src/lib.rs"
 
 [dependencies]
-bdk_bitcoind_rpc = "0.10.0"
-bdk_chain = "0.14.0"
-bdk = "1.0.0-alpha.11"
 wallet = { path = "../wallet" }
 tokio = { version = "1.37.0", features = ["signal"] }
 ctrlc = "3.4.4"
@@ -34,6 +31,8 @@ env_logger = "0.11.3"
 serde_json = "1.0.116"
 bincode = {version = "2.0.0-rc.3", features = ["serde", "derive"]}
 protocol = { path = "../protocol", version = "*", features = ["std"]}
-spacedb = { git = "https://github.com/spacesprotocol/spacedb", tag = "0.0.1" }
+spacedb = { git = "https://github.com/spacesprotocol/spacedb", tag = "0.0.2" }
 base64 = "0.22.1"
 futures = "0.3.30"
+reqwest = { version = "0.12.5", features = ["json", "blocking"] }
+threadpool = "1.8.1"

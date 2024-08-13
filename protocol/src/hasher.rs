@@ -1,8 +1,6 @@
-use bitcoin::{Amount, OutPoint};
-
 #[cfg(feature = "bincode")]
 use bincode::{Decode, Encode};
-
+use bitcoin::{Amount, OutPoint};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -22,14 +20,14 @@ pub struct SpaceHash(Hash);
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 pub struct BidHash(Hash);
 
-#[derive(Copy, Clone,  Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 pub struct BaseHash(pub Hash);
 
 impl BaseHash {
     pub fn from_slice(slice: &[u8]) -> Self {
-        let mut hash = [0u8;32];
+        let mut hash = [0u8; 32];
         hash.copy_from_slice(slice);
         Self(hash)
     }
@@ -57,28 +55,23 @@ impl From<Hash> for SpaceHash {
 impl SpaceHash {
     #[inline(always)]
     pub fn from_raw(value: Hash) -> crate::errors::Result<Self> {
-        if (value[0] & 0b1000_0000) == 0 &&
-            (value[31] & 0b0000_0001) == 0 {
-            return Ok(Self {
-                0: value,
-            })
+        if (value[0] & 0b1000_0000) == 0 && (value[31] & 0b0000_0001) == 0 {
+            return Ok(Self { 0: value });
         }
         return Err(crate::errors::Error::IO("bad space hash".to_string()));
-
     }
 
     pub fn from_slice_unchecked(slice: &[u8]) -> Self {
-        let mut h = [0u8;32];
+        let mut h = [0u8; 32];
         h.copy_from_slice(slice);
         Self(h)
     }
 
     #[inline(always)]
     pub fn as_slice(&self) -> &[u8] {
-        return &self.0
+        return &self.0;
     }
 }
-
 
 impl From<SpaceHash> for Hash {
     fn from(value: SpaceHash) -> Self {
@@ -97,7 +90,6 @@ impl From<OutpointHash> for Hash {
         value.0
     }
 }
-
 
 impl From<Hash> for BaseHash {
     fn from(value: Hash) -> Self {
@@ -122,8 +114,8 @@ impl OutpointHash {
 }
 
 impl BidHash {
-    pub fn from_bid(bid_value : Amount, mut base_hash: Hash) -> Self {
-        let priority = core::cmp::min(bid_value.to_sat(), (1 << 31)-1) as u32;
+    pub fn from_bid(bid_value: Amount, mut base_hash: Hash) -> Self {
+        let priority = core::cmp::min(bid_value.to_sat(), (1 << 31) - 1) as u32;
         let priority_bytes = priority.to_be_bytes();
         base_hash[..4].copy_from_slice(&priority_bytes);
 
@@ -152,7 +144,7 @@ impl BidHash {
     }
 
     pub fn from_slice_unchecked(slice: &[u8]) -> Self {
-        let mut h = [0u8;32];
+        let mut h = [0u8; 32];
         h.copy_from_slice(slice);
         Self(h)
     }

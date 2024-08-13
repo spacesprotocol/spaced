@@ -1,22 +1,29 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::{env, fs};
-use std::ffi::OsString;
-use std::fmt::Display;
-use std::net::{IpAddr, SocketAddr};
-use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
-use bdk_bitcoind_rpc::bitcoincore_rpc::Auth;
-use protocol::bitcoin::Network;
-use clap::{Parser, ValueEnum, ArgGroup};
-use clap::error::{ContextKind, ContextValue};
+use std::{
+    collections::{HashMap, HashSet},
+    env,
+    ffi::OsString,
+    fmt::Display,
+    fs,
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+};
+
+use clap::{
+    error::{ContextKind, ContextValue},
+    ArgGroup, Parser, ValueEnum,
+};
 use directories::ProjectDirs;
 use jsonrpsee::core::Serialize;
 use log::error;
+use protocol::bitcoin::Network;
 use serde::Deserialize;
 use toml::Value;
-use crate::store::{LiveStore, Store};
-use crate::source::{RpcBlockchain, BlockchainRpcConfig};
-use crate::sync::{Mempool, Spaced};
+
+use crate::{
+    source::{BitcoinRpc, BitcoinRpcAuth},
+    store::{LiveStore, Store},
+    sync::Spaced,
+};
 
 const RPC_OPTIONS: &str = "RPC Server Options";
 
@@ -37,9 +44,12 @@ pub struct Args {
     block_index: bool,
     #[arg(long, env = "SPACED_DATA_DIR")]
     data_dir: Option<PathBuf>,
-    /// Use the chain <chain> (default: main). Allowed values: main, test, signet, regtest
-    #[arg(long, default_value = "main", env = "SPACED_CHAIN")]
-    chain: Chain,
+    /// Network to use
+    #[arg(long, env = "SPACED_CHAIN")]
+    chain: ExtendedNetwork,
+    /// Number of concurrent workers allowed during syncing
+    #[arg(short, long, env = "SPACED_JOBS", default_value = "8")]
+    jobs: u8,
     /// Bitcoin RPC URL
     #[arg(long, env = "SPACED_BITCOIN_RPC_URL")]
     bitcoin_rpc_url: Option<String>,
@@ -47,7 +57,11 @@ pub struct Args {
     #[arg(long, env = "SPACED_BITCOIN_RPC_COOKIE")]
     bitcoin_rpc_cookie: Option<PathBuf>,
     /// Bitcoin RPC user
-    #[arg(long, requires = "bitcoin_rpc_password", env = "SPACED_BITCOIN_RPC_USER")]
+    #[arg(
+        long,
+        requires = "bitcoin_rpc_password",
+        env = "SPACED_BITCOIN_RPC_USER"
+    )]
     bitcoin_rpc_user: Option<String>,
     /// Bitcoin RPC password
     #[arg(long, env = "SPACED_BITCOIN_RPC_PASSWORD")]
@@ -57,26 +71,28 @@ pub struct Args {
     #[arg(long, help_heading = Some(RPC_OPTIONS), default_values = ["127.0.0.1", "::1"], env = "SPACED_RPC_BIND")]
     rpc_bind: Vec<String>,
     /// Listen for JSON-RPC connections on <port>
-    /// (default: 22220, testnet: 22221, signet: 22224, regtest: 22226)
     #[arg(long, help_heading = Some(RPC_OPTIONS), env = "SPACED_RPC_PORT")]
-    rpc_port: Option<u16>
+    rpc_port: Option<u16>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, ValueEnum, Serialize, Deserialize)]
-pub enum Chain {
-    Main,
-    Test,
+#[serde(rename_all = "lowercase")]
+pub enum ExtendedNetwork {
+    Mainnet,
+    Testnet,
+    Testnet4,
     Signet,
     Regtest,
 }
 
-impl Chain {
-    pub fn network(&self) -> Network {
+impl ExtendedNetwork {
+    pub fn fallback_network(&self) -> Network {
         match self {
-            Chain::Main => Network::Bitcoin,
-            Chain::Test => Network::Testnet,
-            Chain::Signet => Network::Signet,
-            Chain::Regtest => Network::Regtest,
+            ExtendedNetwork::Mainnet => Network::Bitcoin,
+            ExtendedNetwork::Testnet => Network::Testnet,
+            ExtendedNetwork::Signet => Network::Signet,
+            ExtendedNetwork::Regtest => Network::Regtest,
+            ExtendedNetwork::Testnet4 => Network::Testnet,
         }
     }
 }
@@ -96,16 +112,14 @@ impl Args {
 
                 match default_path.exists() {
                     true => Args::merge_args_config(Some(default_path)),
-                    false => args
+                    false => args,
                 }
-            },
-            Some(user_specified_path) => Args::merge_args_config(Some(user_specified_path))
+            }
+            Some(user_specified_path) => Args::merge_args_config(Some(user_specified_path)),
         };
 
-        let network = args.chain.network();
-
         if args.bitcoin_rpc_url.is_none() {
-            args.bitcoin_rpc_url = Some(default_bitcoin_rpc_url(&network).to_string())
+            args.bitcoin_rpc_url = Some(default_bitcoin_rpc_url(&args.chain).to_string())
         }
         if args.rpc_port.is_none() {
             args.rpc_port = Some(default_spaces_rpc_port(&args.chain));
@@ -117,35 +131,39 @@ impl Args {
         };
 
         let default_port = args.rpc_port.unwrap();
-        let rpc_bind_addresses: Vec<SocketAddr> = args.rpc_bind
+        let rpc_bind_addresses: Vec<SocketAddr> = args
+            .rpc_bind
             .iter()
             .filter_map(|s| {
                 s.parse::<SocketAddr>()
-                    .or_else(|_| s.parse::<IpAddr>().map(|ip| SocketAddr::new(ip, default_port)))
+                    .or_else(|_| {
+                        s.parse::<IpAddr>()
+                            .map(|ip| SocketAddr::new(ip, default_port))
+                    })
                     .ok()
             })
             .collect();
 
-        let params = Spaced::params(network);
+        let genesis = Spaced::genesis(args.chain);
         let bitcoin_rpc_auth = if let Some(cookie) = args.bitcoin_rpc_cookie {
-            Auth::CookieFile(cookie)
+            let cookie = std::fs::read_to_string(cookie)?;
+            BitcoinRpcAuth::Cookie(cookie)
         } else if let Some(user) = args.bitcoin_rpc_user {
-            Auth::UserPass(user, args.bitcoin_rpc_password.expect("password"))
+            BitcoinRpcAuth::UserPass(user, args.bitcoin_rpc_password.expect("password"))
         } else {
-            Auth::None
-        };
-        let bitcoin_rpc_config = BlockchainRpcConfig {
-            auth: bitcoin_rpc_auth,
-            url: args.bitcoin_rpc_url.expect("bitcoin rpc url"),
+            BitcoinRpcAuth::None
         };
 
-        let rpc_blockchain = RpcBlockchain::new(bitcoin_rpc_config)?;
+        let rpc = BitcoinRpc::new(
+            &args.bitcoin_rpc_url.expect("bitcoin rpc url"),
+            bitcoin_rpc_auth,
+        );
 
         std::fs::create_dir_all(data_dir.clone())?;
 
         let chain_store = Store::open(data_dir.join("protocol.sdb"))?;
         let chain = LiveStore {
-            state: chain_store.begin(&params)?,
+            state: chain_store.begin(&genesis)?,
             store: chain_store,
         };
 
@@ -153,44 +171,40 @@ impl Args {
             true => {
                 let block_store = Store::open(data_dir.join("blocks.sdb"))?;
                 Some(LiveStore {
-                    state: block_store.begin(&params).expect("begin block index"),
+                    state: block_store.begin(&genesis).expect("begin block index"),
                     store: block_store,
                 })
             }
             false => None,
         };
 
-        let tx_count = chain.state.metadata.read().expect("read").tx_count;
         Ok(Spaced {
-            network,
-            params,
-            source: rpc_blockchain,
+            network: args.chain,
+            rpc,
             data_dir,
             bind: rpc_bind_addresses,
             chain,
             block_index,
-            mempool: Mempool {
-                opens: Arc::new(RwLock::new(BTreeMap::new())),
-            },
-            tx_count,
+            num_workers: args.jobs as usize,
         })
     }
 
-
-
     /// Merges configuration file if set and command line arguments (latter takes priority)
-    fn merge_args_config(config_file : Option<PathBuf>) -> Self {
+    fn merge_args_config(config_file: Option<PathBuf>) -> Self {
         let mut config_args_keys = None;
         let config_args = match load_args(config_file) {
-            None =>  Args::try_parse_from(env::args_os()),
+            None => Args::try_parse_from(env::args_os()),
             Some((config_args, keys)) => {
                 config_args_keys = Some(keys);
                 let cmd_args = env::args_os().collect::<Vec<OsString>>();
-                let config_args : Vec<OsString> = config_args.iter().map(|s| s.into()).collect();
-                let all_args = cmd_args.iter()
-                    .take(1).chain(config_args.iter()).chain(cmd_args.iter().skip(1));
+                let config_args: Vec<OsString> = config_args.iter().map(|s| s.into()).collect();
+                let all_args = cmd_args
+                    .iter()
+                    .take(1)
+                    .chain(config_args.iter())
+                    .chain(cmd_args.iter().skip(1));
                 Args::try_parse_from(all_args)
-            },
+            }
         };
 
         let args = match config_args {
@@ -227,14 +241,13 @@ pub fn safe_exit(code: i32) -> ! {
     std::process::exit(code)
 }
 
-
-fn default_bitcoin_rpc_url(network: &Network) -> &'static str {
+fn default_bitcoin_rpc_url(network: &ExtendedNetwork) -> &'static str {
     match network {
-        Network::Bitcoin => "http://127.0.0.1:8332",
-        Network::Testnet => "http://127.0.0.1:18332",
-        Network::Signet => "http://127.0.0.1:38332",
-        Network::Regtest => "http://127.0.0.1:18443",
-        _ => panic!("unknown network")
+        ExtendedNetwork::Mainnet => "http://127.0.0.1:8332",
+        ExtendedNetwork::Testnet4 => "http://127.0.0.1:48332",
+        ExtendedNetwork::Signet => "http://127.0.0.1:38332",
+        ExtendedNetwork::Testnet => "http://127.0.0.1:18332",
+        ExtendedNetwork::Regtest => "http://127.0.0.1:18443",
     }
 }
 
@@ -245,19 +258,15 @@ fn toml_value_to_string(value: Value) -> Option<String> {
         Value::Float(f) => Some(f.to_string()),
         Value::Boolean(b) => Some(b.to_string()),
         Value::Datetime(d) => Some(d.to_string()),
-        Value::Array(_) => {
-            None
-        }
-        Value::Table(_) => {
-            None
-        }
+        Value::Array(_) => None,
+        Value::Table(_) => None,
     }
 }
 
 fn load_args(path: Option<PathBuf>) -> Option<(Vec<String>, HashSet<String>)> {
     let path = match path {
         None => return None,
-        Some(p) => p
+        Some(p) => p,
     };
 
     let mut config_args = HashSet::new();
@@ -274,38 +283,39 @@ fn load_args(path: Option<PathBuf>) -> Option<(Vec<String>, HashSet<String>)> {
             args.push(arg);
             args.push(value);
         }
-        return Some((args, config_args))
+        return Some((args, config_args));
     }
 
     error!("could not read configuration at {}", path.to_str().unwrap());
     safe_exit(1);
 }
 
-fn maybe_style_arg(str : &str, set: &HashSet<String>) -> String {
+fn maybe_style_arg(str: &str, set: &HashSet<String>) -> String {
     let arg_name = str.split_once(' ');
-    if let Some( (arg_name, _)) = arg_name {
+    if let Some((arg_name, _)) = arg_name {
         if set.contains(arg_name) {
-            return str.replace("--", "config.")
+            return str
+                .replace("--", "config.")
                 .replace('-', "_")
                 .replace('<', "= <")
-                .replace('>', ">")
+                .replace('>', ">");
         }
     }
 
-    return str.to_string()
+    return str.to_string();
 }
 
 fn style_config_error(err: clap::Error, config_args: HashSet<String>) -> clap::Error {
     let mut new_error = clap::Error::new(err.kind());
     for (ck, cv) in err.context() {
         match ck {
-            ContextKind::Usage |
-            ContextKind::Suggested |
-            ContextKind::SuggestedCommand |
-            ContextKind::SuggestedSubcommand |
-            ContextKind::Custom => {
+            ContextKind::Usage
+            | ContextKind::Suggested
+            | ContextKind::SuggestedCommand
+            | ContextKind::SuggestedSubcommand
+            | ContextKind::Custom => {
                 // skip
-            },
+            }
             _ => {
                 let new_cv = match cv {
                     ContextValue::String(str) => {
@@ -315,8 +325,8 @@ fn style_config_error(err: clap::Error, config_args: HashSet<String>) -> clap::E
                         let mut strs = strings.clone();
                         strs[0] = maybe_style_arg(&strs[0], &config_args);
                         ContextValue::Strings(strs)
-                    },
-                    _ => cv.clone()
+                    }
+                    _ => cv.clone(),
                 };
 
                 new_error.insert(ck, new_cv);
@@ -327,23 +337,25 @@ fn style_config_error(err: clap::Error, config_args: HashSet<String>) -> clap::E
     new_error
 }
 
-impl Display for Chain {
+impl Display for ExtendedNetwork {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let str = match self {
-            Chain::Main => "main".to_string(),
-            Chain::Test => "test".to_string(),
-            Chain::Signet => "signet".to_string(),
-            Chain::Regtest => "regtest".to_string(),
+            ExtendedNetwork::Mainnet => "mainnet".to_string(),
+            ExtendedNetwork::Testnet => "testnet".to_string(),
+            ExtendedNetwork::Testnet4 => "testnet4".to_string(),
+            ExtendedNetwork::Signet => "signet".to_string(),
+            ExtendedNetwork::Regtest => "regtest".to_string(),
         };
         write!(f, "{}", str)
     }
 }
 
-fn default_spaces_rpc_port(chain: &Chain) -> u16 {
+pub fn default_spaces_rpc_port(chain: &ExtendedNetwork) -> u16 {
     match chain {
-        Chain::Main => 22220,
-        Chain::Test => 22221,
-        Chain::Signet => 22224,
-        Chain::Regtest => 22226,
+        ExtendedNetwork::Mainnet => 7225,
+        ExtendedNetwork::Testnet4 => 7224,
+        ExtendedNetwork::Testnet => 7223,
+        ExtendedNetwork::Signet => 7221,
+        ExtendedNetwork::Regtest => 7218,
     }
 }

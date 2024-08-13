@@ -1,44 +1,95 @@
-use std::collections::BTreeMap;
-use std::fmt::{Debug};
-use std::fs;
-use std::path::PathBuf;
-use std::time::{Duration, SystemTime};
+use std::{
+    collections::BTreeMap,
+    fmt,
+    fmt::Debug,
+    fs,
+    path::PathBuf,
+    str::FromStr,
+    time::{Duration, SystemTime},
+};
+
 use anyhow::{anyhow, Context};
-use bdk::bitcoin::{Amount, Block, BlockHash, FeeRate, Network, OutPoint, Psbt, script, Sequence,
-                   TapLeafHash, taproot, TapSighashType, Transaction, TxOut, Witness};
-use bdk::{bitcoin, KeychainKind, LocalOutput, SignOptions, WeightedUtxo};
-use bdk::bitcoin::absolute::{Height, LockTime};
-use bdk::bitcoin::psbt::raw::ProprietaryKey;
-use bdk::bitcoin::sighash::{Prevouts, SighashCache};
-use bdk::bitcoin::taproot::LeafVersion;
-use bdk::chain::ConfirmationTime;
-use bdk::descriptor::IntoWalletDescriptor;
-use bdk::wallet::{ChangeSet, InsertTxError};
-use bdk::wallet::coin_selection::{CoinSelectionAlgorithm, CoinSelectionResult, Error, Excess};
-use bdk::wallet::tx_builder::TxOrdering;
+use bdk_wallet::{
+    chain::{BlockId, ConfirmationTime},
+    descriptor::IntoWalletDescriptor,
+    wallet::{
+        coin_selection::{CoinSelectionAlgorithm, CoinSelectionResult, Error, Excess},
+        tx_builder::TxOrdering,
+        ChangeSet, InsertTxError,
+    },
+    KeychainKind, LocalOutput, SignOptions, WeightedUtxo,
+};
 use bincode::config;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde::ser::SerializeSeq;
-use protocol::bitcoin::key::{rand, UntweakedKeypair};
-use protocol::bitcoin::{Address, opcodes, ScriptBuf, XOnlyPublicKey};
-use protocol::bitcoin::constants::genesis_block;
-use protocol::bitcoin::taproot::{ControlBlock, TaprootBuilder};
+use bitcoin::{
+    absolute::{Height, LockTime},
+    psbt::raw::ProprietaryKey,
+    script,
+    sighash::{Prevouts, SighashCache},
+    taproot,
+    taproot::LeafVersion,
+    Amount, Block, BlockHash, FeeRate, Network, OutPoint, Psbt, Sequence, TapLeafHash,
+    TapSighashType, Transaction, TxOut, Witness,
+};
+use protocol::bitcoin::{
+    constants::genesis_block,
+    key::{rand, UntweakedKeypair},
+    opcodes,
+    taproot::{ControlBlock, TaprootBuilder},
+    Address, ScriptBuf, XOnlyPublicKey,
+};
+use serde::{ser::SerializeSeq, Deserialize, Deserializer, Serialize, Serializer};
+
 use crate::address::SpaceAddress;
 
-pub mod derivation;
-pub mod builder;
+pub extern crate bdk_wallet;
+pub extern crate bitcoin;
+
 pub mod address;
+pub mod builder;
+pub mod derivation;
 
 const WALLET_SPACE_MAGIC: &[u8; 12] = b"WALLET_SPACE";
 const WALLET_COIN_MAGIC: &[u8; 12] = b"WALLET_COINS";
 
-
-pub struct SuperWallet {
+pub struct SpacesWallet {
     pub name: String,
     pub data_dir: PathBuf,
+    pub start_block: u32,
     pub network: Network,
-    pub coins: bdk::wallet::Wallet,
-    pub spaces: bdk::wallet::Wallet,
+    pub coins: bdk_wallet::wallet::Wallet,
+    pub spaces: bdk_wallet::wallet::Wallet,
+    pub coins_db: bdk_file_store::Store<ChangeSet>,
+    pub spaces_db: bdk_file_store::Store<ChangeSet>,
+}
+
+/// Implements wallet export format used by [FullyNoded](https://github.com/Fonta1n3/FullyNoded/blob/10b7808c8b929b171cca537fb50522d015168ac9/Docs/Wallets/Wallet-Export-Spec.md).
+/// With the addition of "spaces_descriptor"
+/// export is adopted from bdk https://github.com/bitcoindevkit/bdk/blob/master/crates/wallet/src/wallet/export.rs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletExport {
+    pub descriptor: String,
+    pub spaces_descriptor: String,
+    /// Earliest block to rescan when looking for the wallet's transactions
+    #[serde(rename = "blockheight")]
+    pub block_height: u32,
+    /// Arbitrary label for the wallet
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletInfo {
+    pub label: String,
+    /// Earliest block to rescan when looking for the wallet's transactions
+    pub start_block: u32,
+    pub tip: u32,
+    pub descriptors: Vec<DescriptorInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DescriptorInfo {
+    pub descriptor: String,
+    pub internal: bool,
+    pub spaces: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -63,89 +114,232 @@ pub struct FullTxOut {
     pub(crate) txout: TxOut,
 }
 
-pub struct WalletConfig<C: IntoWalletDescriptor, S: IntoWalletDescriptor> {
+pub struct WalletConfig {
     pub name: String,
     pub data_dir: PathBuf,
+    pub start_block: u32,
     pub network: Network,
     pub genesis_hash: Option<BlockHash>,
-    pub coins_descriptors: CoinDescriptors<C>,
-    pub space_descriptors: SpaceDescriptors<S>,
+    pub coins_descriptors: WalletDescriptors,
+    pub space_descriptors: WalletDescriptors,
 }
 
-pub struct CoinDescriptors<E: IntoWalletDescriptor> {
-    pub external: E,
-    pub change: Option<E>,
+pub struct WalletDescriptors {
+    pub external: String,
+    pub internal: String,
 }
 
-pub struct SpaceDescriptors<E: IntoWalletDescriptor> {
-    pub external: E,
-    pub internal: E,
+impl WalletExport {
+    pub fn from_descriptors<C: IntoWalletDescriptor, S: IntoWalletDescriptor>(
+        label: String,
+        block_height: u32,
+        network: Network,
+        coins: C,
+        spaces: S,
+    ) -> anyhow::Result<Self> {
+        let coin_ctx = bdk_wallet::bitcoin::secp256k1::Secp256k1::new();
+        let (coin_external, coin_keys) = coins.into_wallet_descriptor(&coin_ctx, network)?;
+        let (space_external, space_keys) = spaces.into_wallet_descriptor(&coin_ctx, network)?;
+
+        let coin_external = remove_checksum(coin_external.to_string_with_secret(&coin_keys));
+        let space_external = remove_checksum(space_external.to_string_with_secret(&space_keys));
+
+        Ok(WalletExport {
+            descriptor: coin_external,
+            spaces_descriptor: space_external,
+            block_height,
+            label,
+        })
+    }
+
+    pub fn descriptors(&self) -> WalletDescriptors {
+        WalletDescriptors {
+            external: self.descriptor.clone(),
+            internal: self.descriptor.replace("/0/*", "/1/*").clone(),
+        }
+    }
+
+    pub fn space_descriptors(&self) -> WalletDescriptors {
+        WalletDescriptors {
+            external: self.spaces_descriptor.clone(),
+            internal: self.spaces_descriptor.replace("/0/*", "/1/*").clone(),
+        }
+    }
 }
 
-impl SuperWallet {
+impl SpacesWallet {
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    pub fn new<C: IntoWalletDescriptor, S: IntoWalletDescriptor>(config: WalletConfig<C, S>) -> anyhow::Result<Self> {
+    pub fn new(config: WalletConfig) -> anyhow::Result<Self> {
         if !config.data_dir.exists() {
             std::fs::create_dir_all(config.data_dir.clone())?;
         }
 
         let spaces_path = config.data_dir.join("spaces.db");
-        let spaces_db = bdk_file_store::Store::<ChangeSet>
-        ::open_or_create_new(WALLET_SPACE_MAGIC, spaces_path).context("create store for spaces")?;
+        let mut spaces_db =
+            bdk_file_store::Store::<ChangeSet>::open_or_create_new(WALLET_SPACE_MAGIC, spaces_path)
+                .context("create store for spaces")?;
 
         let coins_path = config.data_dir.join("coins.db");
-        let coins_db = bdk_file_store::Store::<ChangeSet>
-        ::open_or_create_new(WALLET_COIN_MAGIC, coins_path).context("create store for coins")?;
+        let mut coins_db =
+            bdk_file_store::Store::<ChangeSet>::open_or_create_new(WALLET_COIN_MAGIC, coins_path)
+                .context("create store for coins")?;
 
         let genesis_hash = match config.genesis_hash {
             None => genesis_block(config.network).block_hash(),
             Some(hash) => hash,
         };
 
-        let coins_wallet = bdk::wallet::Wallet::new_or_load_with_genesis_hash(
-            config.coins_descriptors.external,
-            config.coins_descriptors.change, coins_db, config.network, genesis_hash)?;
+        let coins_changeset = coins_db.aggregate_changesets()?;
 
-        let spaces_wallet = bdk::wallet::Wallet::new_or_load_with_genesis_hash(
-            config.space_descriptors.external, Some(config.space_descriptors.internal),
-            spaces_db, config.network, genesis_hash)?;
+        let coins_wallet = bdk_wallet::wallet::Wallet::new_or_load_with_genesis_hash(
+            &config.coins_descriptors.external,
+            &config.coins_descriptors.internal,
+            coins_changeset,
+            config.network,
+            genesis_hash,
+        )?;
+
+        let spaces_changeset = spaces_db.aggregate_changesets()?;
+        let spaces_wallet = bdk_wallet::wallet::Wallet::new_or_load_with_genesis_hash(
+            &config.space_descriptors.external,
+            &config.space_descriptors.internal,
+            spaces_changeset,
+            config.network,
+            genesis_hash,
+        )?;
 
         let wallet = Self {
             name: config.name,
+            start_block: config.start_block,
             data_dir: config.data_dir,
             network: config.network,
             coins: coins_wallet,
             spaces: spaces_wallet,
+            coins_db,
+            spaces_db,
         };
 
         wallet.clear_unused_signing_info();
         Ok(wallet)
     }
 
-    pub fn next_unused_space_address(&mut self) -> anyhow::Result<SpaceAddress> {
-        let info = self.spaces.next_unused_address(KeychainKind::External)?;
-        Ok(SpaceAddress::from(info.address))
+    pub fn get_info(&self) -> WalletInfo {
+        let mut descriptors = Vec::with_capacity(4);
+
+        descriptors.push(DescriptorInfo {
+            descriptor: self
+                .coins
+                .public_descriptor(KeychainKind::External)
+                .to_string(),
+            internal: false,
+            spaces: false,
+        });
+        descriptors.push(DescriptorInfo {
+            descriptor: self
+                .coins
+                .public_descriptor(KeychainKind::Internal)
+                .to_string(),
+            internal: true,
+            spaces: false,
+        });
+        descriptors.push(DescriptorInfo {
+            descriptor: self
+                .spaces
+                .public_descriptor(KeychainKind::External)
+                .to_string(),
+            internal: false,
+            spaces: true,
+        });
+        descriptors.push(DescriptorInfo {
+            descriptor: self
+                .spaces
+                .public_descriptor(KeychainKind::Internal)
+                .to_string(),
+            internal: true,
+            spaces: true,
+        });
+
+        WalletInfo {
+            label: self.name.clone(),
+            start_block: self.start_block,
+            tip: self.coins.local_chain().tip().height(),
+            descriptors,
+        }
     }
 
-    pub fn apply_block(&mut self, height: u32, block: &Block) -> anyhow::Result<()> {
-        self.coins.apply_block(&block, height)?;
-        self.spaces.apply_block(&block, height)?;
-        self.coins.commit()?;
-        self.spaces.commit()?;
+    pub fn export(&self) -> WalletExport {
+        let descriptor = self
+            .coins
+            .public_descriptor(KeychainKind::External)
+            .to_string_with_secret(
+                &self
+                    .coins
+                    .get_signers(KeychainKind::External)
+                    .as_key_map(self.coins.secp_ctx()),
+            );
+
+        let spaces_descriptor = self
+            .coins
+            .public_descriptor(KeychainKind::External)
+            .to_string_with_secret(
+                &self
+                    .spaces
+                    .get_signers(KeychainKind::External)
+                    .as_key_map(self.spaces.secp_ctx()),
+            );
+
+        let descriptor = remove_checksum(descriptor);
+        let spaces_descriptor = remove_checksum(spaces_descriptor);
+
+        WalletExport {
+            descriptor,
+            spaces_descriptor,
+            block_height: self.start_block,
+            label: self.name.clone(),
+        }
+    }
+
+    pub fn next_unused_space_address(&mut self) -> SpaceAddress {
+        let info = self.spaces.next_unused_address(KeychainKind::External);
+        SpaceAddress(info.address)
+    }
+
+    pub fn apply_block_connected_to(
+        &mut self,
+        height: u32,
+        block: &Block,
+        block_id: BlockId,
+    ) -> anyhow::Result<()> {
+        self.coins
+            .apply_block_connected_to(&block, height, block_id)?;
+        self.spaces
+            .apply_block_connected_to(&block, height, block_id)?;
+
         Ok(())
     }
 
-    pub fn insert_tx(&mut self, tx: Transaction, position: ConfirmationTime) -> Result<bool, InsertTxError> {
+    pub fn insert_tx(
+        &mut self,
+        tx: Transaction,
+        position: ConfirmationTime,
+    ) -> Result<bool, InsertTxError> {
         self.spaces.insert_tx(tx.clone(), position)?;
         self.coins.insert_tx(tx, position)
     }
 
-    pub fn commit(&mut self) -> anyhow::Result<bool> {
-        self.spaces.commit()?;
-        self.coins.commit()
+    pub fn commit(&mut self) -> anyhow::Result<()> {
+        if let Some(changeset) = self.coins.take_staged() {
+            self.coins_db.append_changeset(&changeset)?;
+        }
+
+        if let Some(changeset) = self.spaces.take_staged() {
+            self.spaces_db.append_changeset(&changeset)?;
+        }
+
+        Ok(())
     }
 
     /// List outputs that can be safely auctioned off
@@ -159,8 +353,12 @@ impl SuperWallet {
 
         // Sort UTXOs by transaction ID and then by output index (vout)
         // to group UTXOs from the same transaction together and in sequential order
-        unspent.sort_by(|a, b| a.outpoint.txid.cmp(&b.outpoint.txid)
-            .then_with(|| a.outpoint.vout.cmp(&b.outpoint.vout)));
+        unspent.sort_by(|a, b| {
+            a.outpoint
+                .txid
+                .cmp(&b.outpoint.txid)
+                .then_with(|| a.outpoint.vout.cmp(&b.outpoint.vout))
+        });
 
         // Iterate over a sliding window of 2 UTXOs at a time
         for window in unspent.windows(2) {
@@ -169,11 +367,12 @@ impl SuperWallet {
             // - Both UTXOs must be from the same transaction (matching txid)
             // - The first UTXO's vout must be even
             // - The second UTXO's vout must be the first UTXO's vout + 1
-            if utxo1.outpoint.txid == utxo2.outpoint.txid &&
-                utxo1.outpoint.vout % 2 == 0 &&
-                utxo1.keychain == KeychainKind::Internal &&
-                utxo2.outpoint.vout == utxo1.outpoint.vout + 1 &&
-                utxo2.keychain == KeychainKind::External {
+            if utxo1.outpoint.txid == utxo2.outpoint.txid
+                && utxo1.outpoint.vout % 2 == 0
+                && utxo1.keychain == KeychainKind::Internal
+                && utxo2.outpoint.vout == utxo1.outpoint.vout + 1
+                && utxo2.keychain == KeychainKind::External
+            {
                 not_auctioned.push(DoubleUtxo {
                     spend: FullTxOut {
                         outpoint: utxo1.outpoint,
@@ -194,13 +393,16 @@ impl SuperWallet {
     pub fn new_bid_psbt(&mut self, total_burned: Amount) -> anyhow::Result<(Psbt, DoubleUtxo)> {
         let all = self.list_auction_outputs()?;
 
-        let placeholder = all.first()
-            .ok_or_else(|| anyhow::anyhow!("No placeholders found"))?.clone();
+        let placeholder = all
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("No placeholders found"))?
+            .clone();
 
         let refund_value = total_burned + placeholder.auction.txout.value;
 
         let mut bid_psbt = {
-            let mut builder = self.spaces
+            let mut builder = self
+                .spaces
                 .build_tx()
                 .coin_selection(RequiredUtxosOnlyCoinSelectionAlgorithm);
 
@@ -213,14 +415,20 @@ impl SuperWallet {
                 .manually_selected_only()
                 .sighash(TapSighashType::SinglePlusAnyoneCanPay.into())
                 .add_utxo(placeholder.auction.outpoint)?
-                .add_recipient(placeholder.auction.txout.script_pubkey.clone(), refund_value);
+                .add_recipient(
+                    placeholder.auction.txout.script_pubkey.clone(),
+                    refund_value,
+                );
             builder.finish()?
         };
 
-        let finalized = self.spaces.sign(&mut bid_psbt, SignOptions {
-            allow_all_sighashes: true,
-            ..Default::default()
-        })?;
+        let finalized = self.spaces.sign(
+            &mut bid_psbt,
+            SignOptions {
+                allow_all_sighashes: true,
+                ..Default::default()
+            },
+        )?;
         if !finalized {
             return Err(anyhow::anyhow!("signing bid psbt failed"));
         }
@@ -230,12 +438,16 @@ impl SuperWallet {
 
     pub fn compress_bid_psbt(op_return_vout: u8, psbt: &Psbt) -> anyhow::Result<[u8; 65]> {
         if psbt.inputs.len() != 1 || psbt.inputs[0].final_script_witness.is_none() {
-            return Err(anyhow::anyhow!("bid psbt witness stack must have exactly one input"));
+            return Err(anyhow::anyhow!(
+                "bid psbt witness stack must have exactly one input"
+            ));
         }
         let witness = &psbt.inputs[0].final_script_witness.as_ref().unwrap()[0];
         if witness.len() != 65 || witness[64] != TapSighashType::SinglePlusAnyoneCanPay as u8 {
-            return Err(anyhow::anyhow!("bid psbt witness must be a taproot key spend with \
-            sighash type SingleAnyoneCanPay"));
+            return Err(anyhow::anyhow!(
+                "bid psbt witness must be a taproot key spend with \
+            sighash type SingleAnyoneCanPay"
+            ));
         }
 
         let mut compressed = [0u8; 65];
@@ -252,29 +464,45 @@ impl SuperWallet {
         }
     }
 
-    pub fn sign(&mut self, mut psbt: Psbt, mut extra_prevouts: Option<BTreeMap<OutPoint, TxOut>>) -> anyhow::Result<Transaction> {
+    pub fn sign(
+        &mut self,
+        mut psbt: Psbt,
+        mut extra_prevouts: Option<BTreeMap<OutPoint, TxOut>>,
+    ) -> anyhow::Result<Transaction> {
         // mark any spends needing the spaces signer to be signed later
         for (input_index, input) in psbt.inputs.iter_mut().enumerate() {
             if extra_prevouts.is_none() {
                 extra_prevouts = Some(BTreeMap::new());
             }
             if input.witness_utxo.is_some() {
-                extra_prevouts.as_mut().unwrap()
-                    .insert(psbt.unsigned_tx.input[input_index].previous_output,
-                            input.witness_utxo.clone().unwrap());
+                extra_prevouts.as_mut().unwrap().insert(
+                    psbt.unsigned_tx.input[input_index].previous_output,
+                    input.witness_utxo.clone().unwrap(),
+                );
             }
 
             if input.final_script_witness.is_none() && input.witness_utxo.is_some() {
-                if self.spaces.is_mine(input.witness_utxo.as_ref().unwrap().script_pubkey.as_script()) {
-                    input.proprietary.insert(Self::spaces_signer("tbs"), Vec::new());
+                if self.spaces.is_mine(
+                    input
+                        .witness_utxo
+                        .as_ref()
+                        .unwrap()
+                        .script_pubkey
+                        .as_script(),
+                ) {
+                    input
+                        .proprietary
+                        .insert(Self::spaces_signer("tbs"), Vec::new());
                     input.final_script_witness = Some(Witness::default());
                     continue;
                 }
 
-                let signing_info = self
-                    .get_signing_info(&input.witness_utxo.as_ref().unwrap().script_pubkey);
+                let signing_info =
+                    self.get_signing_info(&input.witness_utxo.as_ref().unwrap().script_pubkey);
                 if let Some(info) = signing_info {
-                    input.proprietary.insert(Self::spaces_signer("reveal_signing_info"), info);
+                    input
+                        .proprietary
+                        .insert(Self::spaces_signer("reveal_signing_info"), info);
                     input.final_script_witness = Some(Witness::default());
                 }
             }
@@ -344,26 +572,29 @@ impl SuperWallet {
         let mut sighash_cache = SighashCache::new(&mut tx);
 
         for (reveal_idx, signing_info) in reveals {
-            let sighash = sighash_cache
-                .taproot_script_spend_signature_hash(
-                    reveal_idx as usize,
-                    &prevouts,
-                    TapLeafHash::from_script(&signing_info.script, LeafVersion::TapScript),
-                    TapSighashType::SinglePlusAnyoneCanPay,
-                )?;
-
+            let sighash = sighash_cache.taproot_script_spend_signature_hash(
+                reveal_idx as usize,
+                &prevouts,
+                TapLeafHash::from_script(&signing_info.script, LeafVersion::TapScript),
+                TapSighashType::Default,
+            )?;
 
             let msg = bitcoin::secp256k1::Message::from_digest_slice(sighash.as_ref())?;
-            let sig = signing_info.ctx.sign_schnorr(
-                &msg,
-                &signing_info.temp_key_pair,
-            );
-            let hash_ty = TapSighashType::SinglePlusAnyoneCanPay;
+            let signature = signing_info
+                .ctx
+                .sign_schnorr(&msg, &signing_info.temp_key_pair);
+            let sighash_type = TapSighashType::Default;
 
             let witness = sighash_cache
                 .witness_mut(reveal_idx as usize)
                 .expect("witness should exist");
-            witness.push(taproot::Signature { sig, hash_ty }.to_vec());
+            witness.push(
+                taproot::Signature {
+                    signature,
+                    sighash_type,
+                }
+                .to_vec(),
+            );
             witness.push(&signing_info.script);
             witness.push(&signing_info.control_block.serialize());
         }
@@ -419,7 +650,14 @@ impl SuperWallet {
 pub struct RequiredUtxosOnlyCoinSelectionAlgorithm;
 
 impl CoinSelectionAlgorithm for RequiredUtxosOnlyCoinSelectionAlgorithm {
-    fn coin_select(&self, required_utxos: Vec<WeightedUtxo>, _optional_utxos: Vec<WeightedUtxo>, _fee_rate: FeeRate, _target_amount: u64, _drain_script: &bdk::bitcoin::Script) -> Result<CoinSelectionResult, Error> {
+    fn coin_select(
+        &self,
+        required_utxos: Vec<WeightedUtxo>,
+        _optional_utxos: Vec<WeightedUtxo>,
+        _fee_rate: FeeRate,
+        _target_amount: u64,
+        _drain_script: &bitcoin::Script,
+    ) -> Result<CoinSelectionResult, Error> {
         let utxos = required_utxos.iter().map(|w| w.utxo.clone()).collect();
         Ok(CoinSelectionResult {
             selected: utxos,
@@ -432,7 +670,6 @@ impl CoinSelectionAlgorithm for RequiredUtxosOnlyCoinSelectionAlgorithm {
         })
     }
 }
-
 
 impl SpaceScriptSigningInfo {
     fn new(network: Network, nop_script: script::Builder) -> anyhow::Result<Self> {
@@ -452,8 +689,7 @@ impl SpaceScriptSigningInfo {
         let control_block = taproot_spend_info
             .control_block(&(script.clone(), LeafVersion::TapScript))
             .expect("failed computing control block");
-        let tweaked_address =
-            Address::p2tr_tweaked(taproot_spend_info.output_key(), network);
+        let tweaked_address = Address::p2tr_tweaked(taproot_spend_info.output_key(), network);
 
         Ok(SpaceScriptSigningInfo {
             ctx: secp256k1,
@@ -485,8 +721,8 @@ impl SpaceScriptSigningInfo {
 
 impl Serialize for SpaceScriptSigningInfo {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-        where
-            S: Serializer,
+    where
+        S: Serializer,
     {
         let mut seq = serializer.serialize_seq(Some(4))?;
         seq.serialize_element(&self.script.to_bytes())?;
@@ -500,8 +736,8 @@ impl Serialize for SpaceScriptSigningInfo {
 
 impl<'de> Deserialize<'de> for SpaceScriptSigningInfo {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where
-            D: Deserializer<'de>,
+    where
+        D: Deserializer<'de>,
     {
         struct OpenSigningInfoVisitor;
 
@@ -513,21 +749,31 @@ impl<'de> Deserialize<'de> for SpaceScriptSigningInfo {
             }
 
             fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-                where
-                    A: serde::de::SeqAccess<'de>,
+            where
+                A: serde::de::SeqAccess<'de>,
             {
-                let script_bytes: Vec<u8> = seq.next_element()?.ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
-                let address_bytes: Vec<u8> = seq.next_element()?.ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
-                let control_block_bytes: Vec<u8> = seq.next_element()?.ok_or_else(|| serde::de::Error::invalid_length(2, &self))?;
-                let temp_key_pair_bytes: Vec<u8> = seq.next_element()?.ok_or_else(|| serde::de::Error::invalid_length(3, &self))?;
+                let script_bytes: Vec<u8> = seq
+                    .next_element()?
+                    .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+                let address_bytes: Vec<u8> = seq
+                    .next_element()?
+                    .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
+                let control_block_bytes: Vec<u8> = seq
+                    .next_element()?
+                    .ok_or_else(|| serde::de::Error::invalid_length(2, &self))?;
+                let temp_key_pair_bytes: Vec<u8> = seq
+                    .next_element()?
+                    .ok_or_else(|| serde::de::Error::invalid_length(3, &self))?;
 
                 let ctx = bitcoin::secp256k1::Secp256k1::new();
                 let script = ScriptBuf::from_bytes(script_bytes).clone();
                 let tweaked_address = ScriptBuf::from_bytes(address_bytes).clone();
 
-                let control_block = ControlBlock::decode(control_block_bytes.as_slice()).map_err(serde::de::Error::custom)?;
-                let temp_key_pair = UntweakedKeypair::from_seckey_slice(&ctx, temp_key_pair_bytes.as_slice())
+                let control_block = ControlBlock::decode(control_block_bytes.as_slice())
                     .map_err(serde::de::Error::custom)?;
+                let temp_key_pair =
+                    UntweakedKeypair::from_seckey_slice(&ctx, temp_key_pair_bytes.as_slice())
+                        .map_err(serde::de::Error::custom)?;
 
                 Ok(SpaceScriptSigningInfo {
                     ctx,
@@ -540,5 +786,29 @@ impl<'de> Deserialize<'de> for SpaceScriptSigningInfo {
         }
 
         deserializer.deserialize_seq(OpenSigningInfoVisitor)
+    }
+}
+
+fn remove_checksum(s: String) -> String {
+    s.split_once('#').map(|(a, _)| String::from(a)).unwrap()
+}
+
+impl fmt::Display for WalletExport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", serde_json::to_string(self).unwrap())
+    }
+}
+
+impl fmt::Display for WalletInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", serde_json::to_string(self).unwrap())
+    }
+}
+
+impl FromStr for WalletExport {
+    type Err = serde_json::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        serde_json::from_str(s)
     }
 }
