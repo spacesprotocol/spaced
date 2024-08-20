@@ -1,6 +1,7 @@
 use alloc::{string::String, vec::Vec};
 use core::{
     fmt::{Display, Formatter},
+    result,
     str::FromStr,
 };
 
@@ -130,7 +131,7 @@ pub trait NameLike {
 impl FromStr for SName {
     type Err = crate::errors::Error;
 
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+    fn from_str(s: &str) -> result::Result<Self, Self::Err> {
         s.try_into()
     }
 }
@@ -138,7 +139,7 @@ impl FromStr for SName {
 impl<const N: usize> TryFrom<&[u8; N]> for SName {
     type Error = crate::errors::Error;
 
-    fn try_from(value: &[u8; N]) -> std::result::Result<Self, Self::Error> {
+    fn try_from(value: &[u8; N]) -> result::Result<Self, Self::Error> {
         value.as_slice().try_into()
     }
 }
@@ -146,7 +147,7 @@ impl<const N: usize> TryFrom<&[u8; N]> for SName {
 impl TryFrom<&Vec<u8>> for SName {
     type Error = crate::errors::Error;
 
-    fn try_from(value: &Vec<u8>) -> std::result::Result<Self, Self::Error> {
+    fn try_from(value: &Vec<u8>) -> result::Result<Self, Self::Error> {
         value.as_slice().try_into()
     }
 }
@@ -154,7 +155,7 @@ impl TryFrom<&Vec<u8>> for SName {
 impl core::convert::TryFrom<&[u8]> for SName {
     type Error = crate::errors::Error;
 
-    fn try_from(value: &[u8]) -> std::result::Result<Self, Self::Error> {
+    fn try_from(value: &[u8]) -> result::Result<Self, Self::Error> {
         let name_ref: SNameRef = value.try_into()?;
         Ok(name_ref.to_owned())
     }
@@ -193,7 +194,7 @@ impl<'a> core::convert::TryFrom<&'a [u8]> for SNameRef<'a> {
 impl TryFrom<String> for SName {
     type Error = crate::errors::Error;
 
-    fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+    fn try_from(value: String) -> result::Result<Self, Self::Error> {
         value.as_str().try_into()
     }
 }
@@ -201,7 +202,7 @@ impl TryFrom<String> for SName {
 impl TryFrom<&str> for SName {
     type Error = crate::errors::Error;
 
-    fn try_from(value: &str) -> std::result::Result<Self, Self::Error> {
+    fn try_from(value: &str) -> result::Result<Self, Self::Error> {
         let (subspace, space) = value
             .split_once('@')
             .ok_or(Error::Name(NameErrorKind::MalformedName))?;

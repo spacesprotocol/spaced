@@ -122,9 +122,9 @@ pub mod bincode_impl {
 
     impl TryFrom<&[u8]> for ChainAnchor {
         type Error = DecodeError;
-        fn try_from(value: &[u8]) -> std::result::Result<Self, Self::Error> {
+        fn try_from(value: &[u8]) -> core::result::Result<Self, Self::Error> {
             let (meta, _): (ChainAnchor, _) = bincode::decode_from_slice(value, config::standard())
-                .expect("could not parse chain anchor");
+                .map_err(|_| DecodeError::OtherString("could not parse chain anchor".to_owned()))?;
             Ok(meta)
         }
     }
