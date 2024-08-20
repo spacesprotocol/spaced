@@ -1,3 +1,4 @@
+use crate::alloc::string::ToString;
 #[cfg(feature = "bincode")]
 use bincode::{Decode, Encode};
 use bitcoin::{Amount, OutPoint};

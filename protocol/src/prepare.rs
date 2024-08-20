@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use bitcoin::{
     absolute::LockTime,
     opcodes::all::OP_RETURN,
