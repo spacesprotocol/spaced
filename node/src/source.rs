@@ -742,8 +742,8 @@ mod test {
     #[test]
     fn test_fetcher() -> anyhow::Result<()> {
         let rpc = BitcoinRpc::new(
-            "http://127.0.0.1:18332",
-            BitcoinRpcAuth::UserPass("test".to_string(), "test".to_string()),
+            "http://127.0.0.1:48332",
+            BitcoinRpcAuth::UserPass("testnet4".to_string(), "testnet4".to_string()),
         );
 
         let client = reqwest::blocking::Client::new();
