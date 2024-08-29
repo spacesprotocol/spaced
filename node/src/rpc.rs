@@ -296,6 +296,7 @@ impl WalletManager {
             )));
         }
 
+        fs::create_dir_all(&wallet_path)?;
         let wallet_export_path = wallet_path.join("wallet.json");
         let mut file = fs::File::create(wallet_export_path)?;
         file.write_all(wallet.to_string().as_bytes())?;
