@@ -1,9 +1,10 @@
-use crate::alloc::string::ToString;
 #[cfg(feature = "bincode")]
 use bincode::{Decode, Encode};
 use bitcoin::{Amount, OutPoint};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
+
+use crate::alloc::string::ToString;
 
 pub type Hash = [u8; 32];
 
