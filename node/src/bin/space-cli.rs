@@ -10,10 +10,8 @@ use jsonrpsee::{
 };
 use protocol::{
     bitcoin::{Amount, FeeRate, OutPoint, Txid},
-    hasher::{KeyHasher, SpaceHash},
     opcodes::OP_SETALL,
-    sname::{NameLike, SName},
-    Covenant,
+    Covenant, FullSpaceOut,
 };
 use serde::{Deserialize, Serialize};
 use spaced::{
@@ -22,7 +20,6 @@ use spaced::{
         BidParams, ExecuteParams, OpenParams, RegisterParams, RpcClient, RpcWalletRequest,
         RpcWalletTxBuilder, SendCoinsParams, TransferSpacesParams,
     },
-    store::Sha256,
     wallets::AddressKind,
 };
 
@@ -374,12 +371,15 @@ async fn handle_commands(
             let hashes = cli.client.get_rollout(target).await?;
             let mut spaceouts = Vec::with_capacity(hashes.len());
             for (priority, spacehash) in hashes {
-                let info = cli
+                let outpoint = cli
                     .client
-                    .get_space_info(hex::encode(spacehash.as_slice()))
+                    .get_space_owner(hex::encode(spacehash.as_slice()))
                     .await?;
-                if let Some(space) = info {
-                    spaceouts.push((priority, space));
+
+                if let Some(outpoint) = outpoint {
+                    if let Some(spaceout) = cli.client.get_spaceout(outpoint).await? {
+                        spaceouts.push((priority, FullSpaceOut { outpoint, spaceout }));
+                    }
                 }
             }
 
@@ -404,13 +404,8 @@ async fn handle_commands(
             println!("{} sat", Amount::from_sat(response).to_string());
         }
         Commands::GetSpace { space } => {
-            let space = SName::try_from(normalize_space(&space).as_str())
-                .map_err(|e| ClientError::Custom(format!("Invalid space name: {}", e)))?;
-            let spacehash = SpaceHash::from(Sha256::hash(space.to_bytes()));
-            let response = cli
-                .client
-                .get_space_info(hex::encode(spacehash.as_slice()))
-                .await?;
+            let space = normalize_space(&space);
+            let response = cli.client.get_space(space).await?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
         Commands::GetSpaceOut { outpoint } => {
