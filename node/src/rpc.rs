@@ -102,14 +102,14 @@ pub trait Rpc {
     #[method(name = "getspaceowner")]
     async fn get_space_owner(&self, space: String) -> Result<Option<OutPoint>, ErrorObjectOwned>;
 
+    #[method(name = "getspaceout")]
+    async fn get_spaceout(&self, outpoint: OutPoint) -> Result<Option<SpaceOut>, ErrorObjectOwned>;
+
     #[method(name = "estimatebid")]
     async fn estimate_bid(&self, target: usize) -> Result<u64, ErrorObjectOwned>;
 
     #[method(name = "getrollout")]
     async fn get_rollout(&self, target: usize) -> Result<Vec<(u32, SpaceHash)>, ErrorObjectOwned>;
-
-    #[method(name = "getspaceout")]
-    async fn get_spaceout(&self, outpoint: OutPoint) -> Result<Option<SpaceOut>, ErrorObjectOwned>;
 
     #[method(name = "getblockdata")]
     async fn get_block_data(
@@ -628,24 +628,6 @@ impl RpcServer for RpcServerImpl {
         Ok(info)
     }
 
-    async fn estimate_bid(&self, target: usize) -> Result<u64, ErrorObjectOwned> {
-        let info = self
-            .store
-            .estimate_bid(target)
-            .await
-            .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))?;
-        Ok(info)
-    }
-
-    async fn get_rollout(&self, target: usize) -> Result<Vec<(u32, SpaceHash)>, ErrorObjectOwned> {
-        let rollouts = self
-            .store
-            .get_rollout(target)
-            .await
-            .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))?;
-        Ok(rollouts)
-    }
-
     async fn get_space_owner(&self, space: String) -> Result<Option<OutPoint>, ErrorObjectOwned> {
         let space = SName::from_str(&space).map_err(|_| {
             ErrorObjectOwned::owned(
@@ -672,6 +654,24 @@ impl RpcServer for RpcServerImpl {
             .await
             .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))?;
         Ok(spaceout)
+    }
+
+    async fn estimate_bid(&self, target: usize) -> Result<u64, ErrorObjectOwned> {
+        let info = self
+            .store
+            .estimate_bid(target)
+            .await
+            .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))?;
+        Ok(info)
+    }
+
+    async fn get_rollout(&self, target: usize) -> Result<Vec<(u32, SpaceHash)>, ErrorObjectOwned> {
+        let rollouts = self
+            .store
+            .get_rollout(target)
+            .await
+            .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))?;
+        Ok(rollouts)
     }
 
     async fn get_block_data(
