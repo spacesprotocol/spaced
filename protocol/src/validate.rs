@@ -1,6 +1,4 @@
-use alloc::collections::btree_map::BTreeMap;
-use alloc::vec;
-use alloc::vec::Vec;
+use alloc::{collections::btree_map::BTreeMap, vec, vec::Vec};
 
 #[cfg(feature = "bincode")]
 use bincode::{Decode, Encode};

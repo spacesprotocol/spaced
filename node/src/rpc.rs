@@ -23,8 +23,9 @@ use protocol::{
         OutPoint,
     },
     constants::ChainAnchor,
-    hasher::{BaseHash, SpaceHash},
+    hasher::{BaseHash, KeyHasher, SpaceHash},
     prepare::DataSource,
+    sname::{NameLike, SName},
     FullSpaceOut, SpaceOut,
 };
 use serde::{Deserialize, Serialize};
@@ -42,7 +43,7 @@ use crate::{
     config::ExtendedNetwork,
     node::ValidatedBlock,
     source::BitcoinRpc,
-    store::{ChainState, LiveSnapshot},
+    store::{ChainState, LiveSnapshot, Sha256},
     wallets::{AddressKind, JointBalance, RpcWallet, TxResponse, WalletCommand, WalletResponse},
 };
 
@@ -58,7 +59,7 @@ pub enum ChainStateCommand {
     GetTip {
         resp: Responder<anyhow::Result<ChainAnchor>>,
     },
-    GetSpaceInfo {
+    GetSpace {
         hash: SpaceHash,
         resp: Responder<anyhow::Result<Option<FullSpaceOut>>>,
     },
@@ -95,26 +96,20 @@ pub trait Rpc {
     #[method(name = "getserverinfo")]
     async fn get_server_info(&self) -> Result<ServerInfo, ErrorObjectOwned>;
 
-    #[method(name = "getspaceinfo")]
-    async fn get_space_info(
-        &self,
-        space_hash: String,
-    ) -> Result<Option<FullSpaceOut>, ErrorObjectOwned>;
+    #[method(name = "getspace")]
+    async fn get_space(&self, space: String) -> Result<Option<FullSpaceOut>, ErrorObjectOwned>;
+
+    #[method(name = "getspaceowner")]
+    async fn get_space_owner(&self, space: String) -> Result<Option<OutPoint>, ErrorObjectOwned>;
+
+    #[method(name = "getspaceout")]
+    async fn get_spaceout(&self, outpoint: OutPoint) -> Result<Option<SpaceOut>, ErrorObjectOwned>;
 
     #[method(name = "estimatebid")]
     async fn estimate_bid(&self, target: usize) -> Result<u64, ErrorObjectOwned>;
 
     #[method(name = "getrollout")]
     async fn get_rollout(&self, target: usize) -> Result<Vec<(u32, SpaceHash)>, ErrorObjectOwned>;
-
-    #[method(name = "getspaceowner")]
-    async fn get_space_owner(
-        &self,
-        space_hash: String,
-    ) -> Result<Option<OutPoint>, ErrorObjectOwned>;
-
-    #[method(name = "getspaceout")]
-    async fn get_spaceout(&self, outpoint: OutPoint) -> Result<Option<SpaceOut>, ErrorObjectOwned>;
 
     #[method(name = "getblockdata")]
     async fn get_block_data(
@@ -296,6 +291,7 @@ impl WalletManager {
             )));
         }
 
+        fs::create_dir_all(&wallet_path)?;
         let wallet_export_path = wallet_path.join("wallet.json");
         let mut file = fs::File::create(wallet_export_path)?;
         file.write_all(wallet.to_string().as_bytes())?;
@@ -614,32 +610,50 @@ impl RpcServer for RpcServerImpl {
         Ok(ServerInfo { chain, tip })
     }
 
-    async fn get_space_info(
-        &self,
-        space_hash_str: String,
-    ) -> Result<Option<FullSpaceOut>, ErrorObjectOwned> {
-        let mut space_hash = [0u8; 32];
-        hex::decode_to_slice(space_hash_str, &mut space_hash).map_err(|_| {
+    async fn get_space(&self, space: String) -> Result<Option<FullSpaceOut>, ErrorObjectOwned> {
+        let space = SName::from_str(&space).map_err(|_| {
             ErrorObjectOwned::owned(
                 -1,
-                "expected a 32-byte hex encoded space hash a",
-                None::<String>,
-            )
-        })?;
-        let space_hash = SpaceHash::from_raw(space_hash).map_err(|_| {
-            ErrorObjectOwned::owned(
-                -1,
-                "expected a 32-byte hex encoded space hash b",
+                "must be a valid canonical space name (e.g. @bitcoin)",
                 None::<String>,
             )
         })?;
 
+        let space_hash = SpaceHash::from(Sha256::hash(space.to_bytes()));
         let info = self
             .store
-            .get_space_info(space_hash)
+            .get_space(space_hash)
             .await
             .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))?;
         Ok(info)
+    }
+
+    async fn get_space_owner(&self, space: String) -> Result<Option<OutPoint>, ErrorObjectOwned> {
+        let space = SName::from_str(&space).map_err(|_| {
+            ErrorObjectOwned::owned(
+                -1,
+                "must be a valid canonical space name (e.g. @bitcoin)",
+                None::<String>,
+            )
+        })?;
+        let space_hash = SpaceHash::from(Sha256::hash(space.to_bytes()));
+
+        let info = self
+            .store
+            .get_space_outpoint(space_hash)
+            .await
+            .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))?;
+
+        Ok(info)
+    }
+
+    async fn get_spaceout(&self, outpoint: OutPoint) -> Result<Option<SpaceOut>, ErrorObjectOwned> {
+        let spaceout = self
+            .store
+            .get_spaceout(outpoint)
+            .await
+            .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))?;
+        Ok(spaceout)
     }
 
     async fn estimate_bid(&self, target: usize) -> Result<u64, ErrorObjectOwned> {
@@ -658,44 +672,6 @@ impl RpcServer for RpcServerImpl {
             .await
             .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))?;
         Ok(rollouts)
-    }
-
-    async fn get_space_owner(
-        &self,
-        space_hash_str: String,
-    ) -> Result<Option<OutPoint>, ErrorObjectOwned> {
-        let mut space_hash = [0u8; 32];
-        hex::decode_to_slice(space_hash_str, &mut space_hash).map_err(|_| {
-            ErrorObjectOwned::owned(
-                -1,
-                "expected a 32-byte hex encoded space hash",
-                None::<String>,
-            )
-        })?;
-        let space_hash = SpaceHash::from_raw(space_hash).map_err(|_| {
-            ErrorObjectOwned::owned(
-                -1,
-                "expected a 32-byte hex encoded space hash",
-                None::<String>,
-            )
-        })?;
-
-        let info = self
-            .store
-            .get_space_outpoint(space_hash)
-            .await
-            .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))?;
-
-        Ok(info)
-    }
-
-    async fn get_spaceout(&self, outpoint: OutPoint) -> Result<Option<SpaceOut>, ErrorObjectOwned> {
-        let spaceout = self
-            .store
-            .get_spaceout(outpoint)
-            .await
-            .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))?;
-        Ok(spaceout)
     }
 
     async fn get_block_data(
@@ -850,7 +826,7 @@ impl AsyncChainState {
                 let tip = chain_state.tip.read().expect("read meta").clone();
                 _ = resp.send(Ok(tip))
             }
-            ChainStateCommand::GetSpaceInfo { hash, resp } => {
+            ChainStateCommand::GetSpace { hash, resp } => {
                 let result = chain_state.get_space_info(&hash);
                 let _ = resp.send(result);
             }
@@ -926,10 +902,10 @@ impl AsyncChainState {
         resp_rx.await?
     }
 
-    pub async fn get_space_info(&self, hash: SpaceHash) -> anyhow::Result<Option<FullSpaceOut>> {
+    pub async fn get_space(&self, hash: SpaceHash) -> anyhow::Result<Option<FullSpaceOut>> {
         let (resp, resp_rx) = oneshot::channel();
         self.sender
-            .send(ChainStateCommand::GetSpaceInfo { hash, resp })
+            .send(ChainStateCommand::GetSpace { hash, resp })
             .await?;
         resp_rx.await?
     }

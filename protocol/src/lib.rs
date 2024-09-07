@@ -5,8 +5,7 @@ extern crate core;
 
 pub extern crate bitcoin;
 
-use alloc::vec;
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 
 #[cfg(feature = "bincode")]
 use bincode::{Decode, Encode};
