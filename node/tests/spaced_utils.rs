@@ -21,6 +21,7 @@ const LOCAL_IP: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 impl SpaceD {
     pub async fn new() -> Result<Self> {
         let mut conf: Conf = Conf::default();
+        // The RPC auth uses username "user" and password "password"
         conf.args = vec!["-regtest", "-fallbackfee=0.0001", "-rpcauth=user:70dbb4f60ccc95e154da97a43b7a9d06$00c10a3849edf2f10173e80d0bdadbde793ad9a80e6e6f9f71f978fb5c797343"];
         let bitcoind = BitcoinD::from_downloaded_with_conf(&conf).unwrap();
         debug!("bitcoind running on port {}", bitcoind.rpc_url());
@@ -42,12 +43,12 @@ impl SpaceD {
             .spawn()?;
         if let Some(_) = process.try_wait()? {
             error!("spaced failed to obtain port {}", rpc_port);
-            return Result::Err(anyhow!("Port unavailable"));
+            return Err(anyhow!("port unavailable"));
         }
         thread::sleep(Duration::from_millis(100));
         assert!(process.stderr.is_none());
         debug!("spaced running on port {}", rpc_port);
-        Result::Ok(Self {
+        Ok(Self {
             bitcoind,
             process,
             rpc_port,
