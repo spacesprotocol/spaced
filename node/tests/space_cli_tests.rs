@@ -14,7 +14,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_server_info() -> Result<(), Box<dyn std::error::Error>> {
         env_logger::init();
-        let spaced = SpaceD::new().await?;
+        let spaced = SpaceD::new()?;
 
         Command::cargo_bin("space-cli")?
             .arg("--chain")

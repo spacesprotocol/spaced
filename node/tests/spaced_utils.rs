@@ -19,7 +19,7 @@ pub struct SpaceD {
 const LOCAL_IP: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 
 impl SpaceD {
-    pub async fn new() -> Result<Self> {
+    pub fn new() -> Result<Self> {
         let mut conf: Conf = Conf::default();
         // The RPC auth uses username "user" and password "password"
         conf.args = vec!["-regtest", "-fallbackfee=0.0001", "-rpcauth=user:70dbb4f60ccc95e154da97a43b7a9d06$00c10a3849edf2f10173e80d0bdadbde793ad9a80e6e6f9f71f978fb5c797343"];
