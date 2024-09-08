@@ -66,11 +66,11 @@ impl Drop for SpaceD {
     }
 }
 
-/// Returns a non-used local port if available.
+/// Returns an unused local port if available.
 ///
-/// Note there is a race condition during the time the method check availability and the caller
+/// The port may become unavailable after returning.
 fn get_available_port() -> Result<u16> {
-    // using 0 as port let the system assign a port available
-    let t = TcpListener::bind(("127.0.0.1", 0))?; // 0 means the OS choose a free port
+    // Binding with a port number of 0 will request that the OS assigns a port to this listener.
+    let t = TcpListener::bind(("127.0.0.1", 0))?;
     Ok(t.local_addr().map(|s| s.port())?)
 }
