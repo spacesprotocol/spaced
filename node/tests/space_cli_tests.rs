@@ -12,7 +12,7 @@ mod tests {
     use std::process::Command;
 
     #[tokio::test]
-    async fn test_get_server_info() -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_get_server_info() -> Result<()> {
         env_logger::init();
         let spaced = SpaceD::new()?;
 
