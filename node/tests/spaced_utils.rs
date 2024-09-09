@@ -21,7 +21,9 @@ const LOCAL_IP: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 impl SpaceD {
     pub fn new() -> Result<Self> {
         let mut conf: Conf = Conf::default();
-        // The RPC auth uses username "user" and password "password"
+        /* The RPC auth uses username "user" and password
+        "password". If we don't set this, bitcoind's RPC API
+        becomes inaccessible to spaced due to auth issues. */
         conf.args = vec!["-regtest", "-fallbackfee=0.0001", "-rpcauth=user:70dbb4f60ccc95e154da97a43b7a9d06$00c10a3849edf2f10173e80d0bdadbde793ad9a80e6e6f9f71f978fb5c797343"];
         let bitcoind = BitcoinD::from_downloaded_with_conf(&conf).unwrap();
         debug!("bitcoind running on port {}", bitcoind.rpc_url());
@@ -67,9 +69,11 @@ impl Drop for SpaceD {
     }
 }
 
-/// Returns an unused local port if available.
-///
-/// The port may become unavailable after returning.
+/**
+Returns an unused local port if available.
+
+The port may become unavailable after returning.
+ */
 fn get_available_port() -> Result<u16> {
     // Binding with a port number of 0 will request that the OS assigns a port to this listener.
     let t = TcpListener::bind(("127.0.0.1", 0))?;
