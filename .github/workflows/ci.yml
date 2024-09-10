@@ -51,8 +51,5 @@ jobs:
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
 
-      - name: Build project
-        run: cargo build
-
       - name: Run tests
         run: cargo test
