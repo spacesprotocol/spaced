@@ -36,7 +36,7 @@ jobs:
         uses: actions/cache@v3
         with:
           path: target
-          key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock', 'node/src/**', 'protocol/src/**', 'wallet/src/**') }}
           restore-keys: |
             ${{ runner.os }}-cargo-build-
 
