@@ -1,19 +1,18 @@
 # Spaced - Bitcoin Spaces daemon
 
-Spaces is a naming protocol that leverages the existing infrastructure and security of Bitcoin without requiring a new blockchain or any modifications to Bitcoin itself [learn more](https://spacesprotocol.org). 
+Spaces is a naming protocol that leverages the existing infrastructure and security of Bitcoin without requiring a new blockchain or any modifications to Bitcoin itself [learn more](https://spacesprotocol.org).
 
 ## Project Structure
 
-| Package  | Requires std     |                                                 |   
-|----------|------------------|-------------------------------------------------|
-| node     | Yes              | Daemon and wallet service                       |                                                        |
-| wallet   | Yes (no-std WIP) | wallet library for building spaces transactions |
-| protocol | No               | Protocol consensus library                      |
-
+| Package  | Requires std     | Description                                    |
+|----------|------------------|------------------------------------------------|
+| node     | Yes              | Daemon and wallet service                      |
+| wallet   | Yes (no-std WIP) | wallet library for building spaces transactions|
+| protocol | No               | Protocol consensus library                     |
 
 ## Setup
 
-First, download Bitcoin Core and set it up to connect to `regtest` 
+First, download Bitcoin Core and set it up to connect to `regtest`
 using these steps:
 
 ```bash
@@ -34,5 +33,3 @@ Connect `spaced` to Bitcoin core
 ```bash
 spaced --chain regtest --bitcoin-rpc-user test --bitcoin-rpc-password test
 ```
-
-

@@ -36,3 +36,8 @@ base64 = "0.22.1"
 futures = "0.3.30"
 reqwest = { version = "0.12.5", features = ["json", "blocking"] }
 threadpool = "1.8.1"
+
+[dev-dependencies]
+assert_cmd = "2.0.16"
+bitcoind = { version = "0.36.0", features = ["26_0"] }
+predicates = "3.1.2"
