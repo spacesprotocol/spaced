@@ -1,8 +1,8 @@
-mod spaced_utils;
+mod utils;
 
 #[cfg(test)]
 mod tests {
-    use crate::spaced_utils::SpaceD;
+    use crate::utils::SpaceD;
     use anyhow::Result;
     use assert_cmd::prelude::*;
     use predicates::prelude::*;

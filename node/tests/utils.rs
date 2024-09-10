@@ -3,7 +3,7 @@ use assert_cmd::cargo::CommandCargoExt;
 use bitcoind::{get_available_port, tempfile::tempdir, BitcoinD, Conf};
 use log::{debug, error};
 use std::{
-    net::{Ipv4Addr, TcpListener},
+    net::Ipv4Addr,
     process::{Child, Command},
     thread,
     time::Duration,

@@ -1,4 +1,4 @@
-mod spaced_utils;
+mod utils;
 
 #[cfg(test)]
 mod tests {
@@ -7,7 +7,7 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use crate::spaced_utils::SpaceD;
+    use crate::utils::SpaceD;
     use anyhow::Result;
     use bitcoind::bitcoincore_rpc::RpcApi;
     use protocol::constants::ChainAnchor;
