@@ -27,7 +27,7 @@ use spaced::{
 #[command(version, about, long_about = None)]
 pub struct Args {
     /// Bitcoin network to use
-    #[arg(long)]
+    #[arg(long, env = "SPACED_CHAIN")]
     chain: spaced::config::ExtendedNetwork,
     /// Spaced RPC URL [default: based on specified chain]
     #[arg(long)]
