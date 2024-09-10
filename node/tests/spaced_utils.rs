@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use assert_cmd::cargo::CommandCargoExt;
-use bitcoind::{tempfile::tempdir, BitcoinD, Conf};
+use bitcoind::{get_available_port, tempfile::tempdir, BitcoinD, Conf};
 use log::{debug, error};
 use std::{
     net::{Ipv4Addr, TcpListener},
@@ -67,14 +67,4 @@ impl Drop for SpaceD {
         debug!("killing spaced process");
         let _ = self.process.kill();
     }
-}
-
-/// Returns an unused local port if available.
-///
-/// The port may become unavailable after returning.
-fn get_available_port() -> Result<u16> {
-    // Binding with a port number of 0 will request that the OS assigns a port
-    // to this listener.
-    let t = TcpListener::bind(("127.0.0.1", 0))?;
-    Ok(t.local_addr().map(|s| s.port())?)
 }
