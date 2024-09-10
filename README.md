@@ -4,7 +4,7 @@ Spaces is a naming protocol that leverages the existing infrastructure and secur
 
 ## Project Structure
 
-| Package  | Requires std     |                                                |
+| Package  | Requires std     | Description                                    |
 |----------|------------------|------------------------------------------------|
 | node     | Yes              | Daemon and wallet service                      |
 | wallet   | Yes (no-std WIP) | wallet library for building spaces transactions|
