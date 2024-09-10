@@ -17,10 +17,14 @@ using these steps:
 
 ```bash
 # Create a directory for Bitcoin regtest data
-mkdir $HOME/bitcoin-regtest
-echo "rpcuser=test" > $HOME/bitcoin-regtest/bitcoin.conf
-echo "rpcpassword=test" >> $HOME/bitcoin-regtest/bitcoin.conf
-bitcoind -regtest -datadir=$HOME/bitcoin-regtest
+mkdir $HOME/bitcoin-testnet4
+
+# Create a configuration file with RPC credentials
+echo "rpcuser=testnet4" > $HOME/bitcoin-testnet4/bitcoin.conf
+echo "rpcpassword=testnet4" >> $HOME/bitcoin-testnet4/bitcoin.conf
+
+# Start Bitcoin Core specifying testnet4 network
+bitcoind -testnet4 -datadir=$HOME/bitcoin-testnet4
 ```
 
 ```bash
@@ -31,5 +35,5 @@ cargo build
 Connect `spaced` to Bitcoin core
 
 ```bash
-spaced --chain regtest --bitcoin-rpc-user test --bitcoin-rpc-password test
+spaced --chain testnet4 --bitcoin-rpc-user testnet4 --bitcoin-rpc-password testnet4
 ```
