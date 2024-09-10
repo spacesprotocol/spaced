@@ -1,9 +1,10 @@
-name: Integration Tests
+name: tests
 
 on:
   push:
     branches:
       - main
+      - add-a-simple-integration-test
   pull_request:
     branches:
       - main
