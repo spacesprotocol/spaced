@@ -16,7 +16,7 @@ First, download Bitcoin Core and set it up to connect to `regtest`
 using these steps:
 
 ```bash
-# Create a directory for Bitcoin regtest data
+# Create a directory for Bitcoin testnet4 data
 mkdir $HOME/bitcoin-testnet4
 
 # Create a configuration file with RPC credentials
