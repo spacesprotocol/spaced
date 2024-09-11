@@ -40,4 +40,24 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_default_wallet_cannot_be_duplicated() -> Result<()> {
+        env_logger::init();
+        let spaced = SpaceD::new()?;
+        let mut create_wallet = setup(spaced.spaced_rpc_url(), &["createwallet"])?;
+        create_wallet
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty());
+
+        let mut create_wallet_again = setup(spaced.spaced_rpc_url(), &["createwallet"])?;
+        create_wallet_again
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Wallet `default` already exists"));
+
+        Ok(())
+    }
+
 }
