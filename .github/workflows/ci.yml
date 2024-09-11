@@ -32,4 +32,4 @@ jobs:
             ${{ runner.os }}-cargo-registry-
 
       - name: Run tests
-        run: cargo test
+        run: cargo test -- --test-threads=1
