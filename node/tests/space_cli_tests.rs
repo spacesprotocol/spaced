@@ -29,8 +29,8 @@ mod tests {
         Ok((spaced, space_cli))
     }
 
-    #[tokio::test]
-    async fn test_get_server_info() -> Result<()> {
+    #[test]
+    fn test_get_server_info() -> Result<()> {
         let (_spaced, mut space_cli) = setup(&["getserverinfo"])?;
 
         space_cli
