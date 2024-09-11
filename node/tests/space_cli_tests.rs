@@ -11,17 +11,29 @@ mod tests {
     use spaced::rpc::ServerInfo;
     use std::process::Command;
 
-    #[tokio::test]
-    async fn test_get_server_info() -> Result<()> {
+    fn setup(args: &[&str]) -> Result<(SpaceD, Command)> {
         env_logger::init();
         let spaced = SpaceD::new()?;
 
-        Command::cargo_bin("space-cli")?
+        let mut space_cli = Command::cargo_bin("space-cli")?;
+        space_cli
             .arg("--chain")
             .arg("regtest")
             .arg("--spaced-rpc-url")
-            .arg(spaced.spaced_rpc_url())
-            .arg("getserverinfo")
+            .arg(spaced.spaced_rpc_url());
+
+        for arg in args {
+            space_cli.arg(arg);
+        }
+
+        Ok((spaced, space_cli))
+    }
+
+    #[tokio::test]
+    async fn test_get_server_info() -> Result<()> {
+        let (_spaced, mut space_cli) = setup(&["getserverinfo"])?;
+
+        space_cli
             .assert()
             .success()
             .stdout(predicate::function(|x: &str| {
