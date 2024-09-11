@@ -25,8 +25,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_server_info() -> Result<()> {
-        env_logger::init();
+    fn get_server_info_works() -> Result<()> {
         let spaced = SpaceD::new()?;
         let mut get_server_info = setup(spaced.spaced_rpc_url(), &["getserverinfo"])?;
 
@@ -42,16 +41,24 @@ mod tests {
     }
 
     #[test]
-    fn test_default_wallet_cannot_be_duplicated() -> Result<()> {
-        env_logger::init();
+    fn create_wallet_works() -> Result<()> {
         let spaced = SpaceD::new()?;
         let mut create_wallet = setup(spaced.spaced_rpc_url(), &["createwallet"])?;
+
         create_wallet
             .assert()
             .success()
             .stdout(predicate::str::is_empty());
 
+        Ok(())
+    }
+
+    #[test]
+    fn create_duplicate_wallet_fails() -> Result<()> {
+        let spaced = SpaceD::new()?;
+        let _ = setup(spaced.spaced_rpc_url(), &["createwallet"])?.status()?;
         let mut create_wallet_again = setup(spaced.spaced_rpc_url(), &["createwallet"])?;
+
         create_wallet_again
             .assert()
             .success()
