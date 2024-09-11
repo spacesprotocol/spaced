@@ -11,26 +11,26 @@ mod tests {
     use spaced::rpc::ServerInfo;
     use std::process::Command;
 
-    fn setup(args: &[&str]) -> Result<(SpaceD, Command)> {
-        env_logger::init();
-        let spaced = SpaceD::new()?;
+    fn setup(spaced_rpc_url: String, args: &[&str]) -> Result<Command> {
         let mut space_cli = Command::cargo_bin("space-cli")?;
         space_cli
             .arg("--chain")
             .arg("regtest")
             .arg("--spaced-rpc-url")
-            .arg(spaced.spaced_rpc_url());
+            .arg(spaced_rpc_url);
         for arg in args {
             space_cli.arg(arg);
         }
-        Ok((spaced, space_cli))
+        Ok(space_cli)
     }
 
     #[test]
     fn test_get_server_info() -> Result<()> {
-        let (_spaced, mut space_cli) = setup(&["getserverinfo"])?;
+        env_logger::init();
+        let spaced = SpaceD::new()?;
+        let mut get_server_info = setup(spaced.spaced_rpc_url(), &["getserverinfo"])?;
 
-        space_cli
+        get_server_info
             .assert()
             .success()
             .stdout(predicate::function(|x: &str| {
