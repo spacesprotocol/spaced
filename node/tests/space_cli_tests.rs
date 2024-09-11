@@ -14,18 +14,15 @@ mod tests {
     fn setup(args: &[&str]) -> Result<(SpaceD, Command)> {
         env_logger::init();
         let spaced = SpaceD::new()?;
-
         let mut space_cli = Command::cargo_bin("space-cli")?;
         space_cli
             .arg("--chain")
             .arg("regtest")
             .arg("--spaced-rpc-url")
             .arg(spaced.spaced_rpc_url());
-
         for arg in args {
             space_cli.arg(arg);
         }
-
         Ok((spaced, space_cli))
     }
 
