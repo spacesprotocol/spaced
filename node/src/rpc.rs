@@ -52,7 +52,7 @@ pub(crate) type Responder<T> = oneshot::Sender<T>;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerInfo {
     pub chain: ExtendedNetwork,
-    tip: ChainAnchor,
+    pub tip: ChainAnchor,
 }
 
 pub enum ChainStateCommand {
