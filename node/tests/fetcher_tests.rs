@@ -1,71 +1,60 @@
-pub mod utils;
+use std::{
+    sync::mpsc::TryRecvError,
+    time::{Duration, Instant},
+};
 
-#[cfg(test)]
-mod tests {
-    use std::{
-        sync::mpsc::TryRecvError,
-        time::{Duration, Instant},
-    };
+use anyhow::Result;
+use protocol::{bitcoin::BlockHash, constants::ChainAnchor};
+use reqwest::blocking::Client;
+use spaced::source::{BitcoinRpc, BitcoinRpcAuth, BlockEvent, BlockFetcher};
+use testutil::TestRig;
 
-    use crate::utils::SpaceD;
-    use anyhow::Result;
-    use bitcoind::bitcoincore_rpc::RpcApi;
-    use protocol::constants::ChainAnchor;
-    use reqwest::blocking::Client;
-    use spaced::source::{BitcoinRpc, BitcoinRpcAuth, BlockEvent, BlockFetcher};
-    use wallet::bitcoin::Network;
+async fn setup(blocks: u64) -> Result<(TestRig, u64, BlockHash)> {
+    let rig = TestRig::new().await?;
+    rig.mine_blocks(blocks as _, None).await?;
+    let height = 0;
+    let hash = rig.get_block_hash(height).await?;
+    Ok((rig, height, hash))
+}
 
-    #[test]
-    fn test_block_fetching_from_bitcoin_rpc() -> Result<()> {
-        let spaced = SpaceD::new()?;
-        let fetcher_rpc = BitcoinRpc::new(
-            &spaced.bitcoind.rpc_url(),
-            BitcoinRpcAuth::UserPass("user".to_string(), "password".to_string()),
-        );
-        let miner_addr = spaced
-            .bitcoind
-            .client
-            .get_new_address(None, None)?
-            .require_network(Network::Regtest)?;
-        const GENERATED_BLOCKS: u32 = 10;
-        spaced
-            .bitcoind
-            .client
-            .generate_to_address(GENERATED_BLOCKS as u64, &miner_addr)?;
+#[test]
+fn test_block_fetching_from_bitcoin_rpc() -> Result<()> {
+    const GENERATED_BLOCKS: u64 = 10;
 
-        let client = Client::new();
-        let (fetcher, receiver) = BlockFetcher::new(fetcher_rpc.clone(), client.clone(), 8);
-        fetcher.start(ChainAnchor {
-            hash: fetcher_rpc.send_json_blocking(&client, &fetcher_rpc.get_block_hash(0))?,
-            height: 0,
-        });
+    let (rig, mut height, hash) = tokio::runtime::Runtime::new()?
+        .block_on(setup(GENERATED_BLOCKS))?;
+    let fetcher_rpc = BitcoinRpc::new(
+        &rig.bitcoind.rpc_url(),
+        BitcoinRpcAuth::UserPass("user".to_string(), "password".to_string()),
+    );
 
-        let mut start_block = 0;
-        let timeout = Duration::from_secs(5);
-        let start_time = Instant::now();
+    let client = Client::new();
+    let (fetcher, receiver) = BlockFetcher::new(fetcher_rpc.clone(), client.clone(), 8);
 
-        loop {
-            if start_time.elapsed() > timeout {
-                panic!("Test timed out after {:?}", timeout);
-            }
-            match receiver.try_recv() {
-                Ok(BlockEvent::Block(id, _)) => {
-                    start_block += 1;
-                    if id.height == GENERATED_BLOCKS {
-                        break;
-                    }
-                }
-                Ok(BlockEvent::Error(e)) => panic!("Unexpected error: {}", e),
-                Err(TryRecvError::Empty) => {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Err(TryRecvError::Disconnected) => panic!("Disconnected unexpectedly"),
-            }
+    fetcher.start(ChainAnchor { hash, height: 0 });
+
+    let timeout = Duration::from_secs(5);
+    let start_time = Instant::now();
+
+    loop {
+        if start_time.elapsed() > timeout {
+            panic!("Test timed out after {:?}", timeout);
         }
-        assert_eq!(
-            start_block, GENERATED_BLOCKS,
-            "Not all blocks were received"
-        );
-        Ok(())
+        match receiver.try_recv() {
+            Ok(BlockEvent::Block(id, _)) => {
+                height += 1;
+                if id.height == GENERATED_BLOCKS as u32 {
+                    break;
+                }
+            }
+            Ok(BlockEvent::Error(e)) => panic!("Unexpected error: {}", e),
+            Err(TryRecvError::Empty) => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(TryRecvError::Disconnected) => panic!("Disconnected unexpectedly"),
+        }
     }
+
+    assert_eq!(height, GENERATED_BLOCKS, "Not all blocks were received");
+    Ok(())
 }

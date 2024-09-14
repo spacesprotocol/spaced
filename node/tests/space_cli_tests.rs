@@ -1,34 +1,29 @@
-pub mod utils;
+use std::process::Command;
 
-#[cfg(test)]
-mod tests {
-    use crate::utils::SpaceD;
-    use anyhow::Result;
-    use assert_cmd::prelude::*;
-    use predicates::prelude::*;
-    use serde_json::from_str;
-    use spaced::config::ExtendedNetwork;
-    use spaced::rpc::ServerInfo;
-    use std::process::Command;
+use anyhow::Result;
+use assert_cmd::prelude::*;
+use predicates::prelude::*;
+use serde_json::from_str;
+use spaced::{config::ExtendedNetwork, rpc::ServerInfo};
+use testutil::TestRig;
 
-    #[tokio::test]
-    async fn test_get_server_info() -> Result<()> {
-        env_logger::init();
-        let spaced = SpaceD::new()?;
+#[tokio::test]
+async fn test_get_server_info() -> Result<()> {
+    env_logger::init();
+    let rig = TestRig::new().await?;
 
-        Command::cargo_bin("space-cli")?
-            .arg("--chain")
-            .arg("regtest")
-            .arg("--spaced-rpc-url")
-            .arg(spaced.spaced_rpc_url())
-            .arg("getserverinfo")
-            .assert()
-            .success()
-            .stdout(predicate::function(|x: &str| {
-                let info: ServerInfo = from_str(x).unwrap();
-                return info.chain == ExtendedNetwork::Regtest;
-            }));
+    Command::cargo_bin("space-cli")?
+        .arg("--chain")
+        .arg("regtest")
+        .arg("--spaced-rpc-url")
+        .arg(rig.spaced.rpc_url())
+        .arg("getserverinfo")
+        .assert()
+        .success()
+        .stdout(predicate::function(|x: &str| {
+            let info: ServerInfo = from_str(x).unwrap();
+            return info.chain == ExtendedNetwork::Regtest;
+        }));
 
-        Ok(())
-    }
+    Ok(())
 }
