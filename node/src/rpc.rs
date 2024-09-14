@@ -380,13 +380,14 @@ impl WalletManager {
 
             // Use testnet in the wallet if regtest is specified to work around
             // a bug in bdk comparing regtest descriptors
+            // TODO: might have been fixed already?
             ExtendedNetwork::Regtest => {
                 genesis_hash = Some(
                     bdk::bitcoin::constants::genesis_block(Regtest)
                         .header
                         .block_hash(),
                 );
-                Network::Testnet
+                Network::Regtest
             }
             ExtendedNetwork::Signet => {
                 genesis_hash = Some(
