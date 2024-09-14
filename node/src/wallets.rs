@@ -94,16 +94,16 @@ pub enum AddressKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfirmedBalance {
-    total: Amount,
-    spendable: Amount,
-    immature: Amount,
-    locked: Amount,
+    pub total: Amount,
+    pub spendable: Amount,
+    pub immature: Amount,
+    pub locked: Amount,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnconfirmedBalance {
-    total: Amount,
-    locked: Amount,
+    pub total: Amount,
+    pub locked: Amount,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
