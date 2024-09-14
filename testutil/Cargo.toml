@@ -1,0 +1,9 @@
+[package]
+name = "testutil"
+version = "0.0.1"
+edition = "2021"
+
+[dependencies]
+bitcoind = { version = "0.36.0", features = ["26_0"] }
+spaced = { path = "../node" }
+assert_cmd = "2.0.16"
