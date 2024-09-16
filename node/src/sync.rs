@@ -154,9 +154,7 @@ impl Spaced {
             start_block.hash, start_block.height
         );
 
-        let rpc = source.rpc.clone();
-        let client = reqwest::blocking::Client::new();
-        let (fetcher, receiver) = BlockFetcher::new(rpc.clone(), client.clone(), self.num_workers);
+        let (fetcher, receiver) = BlockFetcher::new(source.clone(), self.num_workers);
         fetcher.start(start_block);
 
         let mut shutdown_signal = shutdown.subscribe();

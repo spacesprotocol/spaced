@@ -9,7 +9,6 @@ use std::{
     time::Duration,
 };
 
-use anyhow::anyhow;
 use base64::Engine;
 use bitcoin::{Block, BlockHash, Txid};
 use hex::FromHexError;
@@ -34,8 +33,7 @@ pub struct BitcoinRpc {
 }
 
 pub struct BlockFetcher {
-    client: reqwest::blocking::Client,
-    rpc: Arc<BitcoinRpc>,
+    src: BitcoinBlockSource,
     job_id: Arc<AtomicUsize>,
     sender: std::sync::mpsc::SyncSender<BlockEvent>,
     num_workers: usize,
@@ -303,15 +301,13 @@ impl BitcoinRpcAuth {
 
 impl BlockFetcher {
     pub fn new(
-        rpc: BitcoinRpc,
-        client: reqwest::blocking::Client,
+        src: BitcoinBlockSource,
         num_workers: usize,
     ) -> (Self, std::sync::mpsc::Receiver<BlockEvent>) {
         let (tx, rx) = std::sync::mpsc::sync_channel(12);
         (
             Self {
-                client,
-                rpc: Arc::new(rpc),
+                src,
                 job_id: Arc::new(AtomicUsize::new(0)),
                 sender: tx,
                 num_workers,
@@ -328,8 +324,7 @@ impl BlockFetcher {
         self.stop();
 
         let job_id = self.job_id.load(Ordering::SeqCst);
-        let task_client = self.client.clone();
-        let task_rpc = self.rpc.clone();
+        let task_src = self.src.clone();
         let current_task = self.job_id.clone();
         let task_sender = self.sender.clone();
         let num_workers = self.num_workers;
@@ -348,20 +343,19 @@ impl BlockFetcher {
                 }
                 last_check = Instant::now();
 
-                let tip: u32 =
-                    match task_rpc.send_json_blocking(&task_client, &task_rpc.get_block_count()) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            _ = task_sender.send(BlockEvent::Error(BlockFetchError::RpcError(e)));
-                            return;
-                        }
-                    };
+                let tip: u32 = match task_src.get_block_count() {
+                    Ok(t) => t as _,
+                    Err(e) => {
+                        _ = task_sender.send(BlockEvent::Error(BlockFetchError::RpcError(e)));
+                        return;
+                    }
+                };
 
                 if tip > checkpoint.height {
                     let res = Self::run_workers(
                         job_id,
                         current_task.clone(),
-                        task_rpc.clone(),
+                        task_src.clone(),
                         task_sender.clone(),
                         checkpoint,
                         tip,
@@ -386,7 +380,7 @@ impl BlockFetcher {
     fn run_workers(
         job_id: usize,
         current_job: Arc<AtomicUsize>,
-        rpc: Arc<BitcoinRpc>,
+        src: BitcoinBlockSource,
         sender: std::sync::mpsc::SyncSender<BlockEvent>,
         start_block: ChainAnchor,
         end_height: u32,
@@ -400,7 +394,7 @@ impl BlockFetcher {
             queued_height: start_block.height + 1,
             end_height,
             ordered_sender: sender,
-            rpc,
+            src,
             num_workers,
             pool: ThreadPool::new(num_workers),
         };
@@ -409,14 +403,14 @@ impl BlockFetcher {
     }
 
     pub fn fetch_block(
-        rpc: &BitcoinRpc,
-        client: &reqwest::blocking::Client,
+        source: &BitcoinBlockSource,
         hash: &BlockHash,
     ) -> Result<Block, BitcoinRpcError> {
-        let block_req = rpc.get_block(&hash);
+        let block_req = source.rpc.get_block(&hash);
         let id = block_req.id;
-        let response = rpc
-            .send_request_blocking(client, &block_req)?
+        let response = source
+            .rpc
+            .send_request_blocking(&source.client, &block_req)?
             .error_for_status()?;
         let mut raw = response.bytes()?.to_vec();
 
@@ -465,7 +459,7 @@ struct Workers {
     queued_height: u32,
     end_height: u32,
     ordered_sender: std::sync::mpsc::SyncSender<BlockEvent>,
-    rpc: Arc<BitcoinRpc>,
+    src: BitcoinBlockSource,
     num_workers: usize,
     pool: ThreadPool,
 }
@@ -521,7 +515,6 @@ impl Workers {
     }
 
     fn run(&mut self) -> Result<ChainAnchor, BlockFetchError> {
-        let client = reqwest::blocking::Client::new();
         let (tx, rx) = std::sync::mpsc::sync_channel(self.num_workers);
 
         'queue_blocks: while !self.queued_all() {
@@ -534,8 +527,7 @@ impl Workers {
                     return Err(BlockFetchError::ChannelClosed);
                 }
                 let tx = tx.clone();
-                let rpc = self.rpc.clone();
-                let task_client = client.clone();
+                let rpc = self.src.clone();
                 let task_sigterm = self.current_job.clone();
                 let height = self.queued_height;
                 let job_id = self.job_id;
@@ -545,9 +537,8 @@ impl Workers {
                         return;
                     }
                     let result: Result<_, BitcoinRpcError> = (move || {
-                        let hash: BlockHash =
-                            rpc.send_json_blocking(&task_client, &rpc.get_block_hash(height))?;
-                        let block = BlockFetcher::fetch_block(&rpc, &task_client, &hash)?;
+                        let hash: BlockHash = rpc.get_block_hash(height)?;
+                        let block = BlockFetcher::fetch_block(&rpc, &hash)?;
                         Ok((ChainAnchor { height, hash }, block))
                     })();
                     _ = tx.send(result);
@@ -675,7 +666,7 @@ impl ErrorForRpc for reqwest::Response {
             return Err(BitcoinRpcError::Rpc(e));
         }
 
-        return Ok(rpc_res.result.unwrap());
+        Ok(rpc_res.result.unwrap())
     }
 }
 
@@ -704,29 +695,31 @@ impl BitcoinBlockSource {
 }
 
 impl BlockSource for BitcoinBlockSource {
-    fn get_block_hash(&self, height: u32) -> anyhow::Result<BlockHash> {
+    fn get_block_hash(&self, height: u32) -> Result<BlockHash, BitcoinRpcError> {
         Ok(self
             .rpc
             .send_json_blocking(&self.client, &self.rpc.get_block_hash(height))?)
     }
 
-    fn get_block(&self, hash: &BlockHash) -> anyhow::Result<Block> {
+    fn get_block(&self, hash: &BlockHash) -> Result<Block, BitcoinRpcError> {
         Ok(self
             .rpc
             .send_json_blocking(&self.client, &self.rpc.get_block(hash))?)
     }
 
-    fn get_median_time(&self) -> anyhow::Result<u64> {
+    fn get_median_time(&self) -> Result<u64, BitcoinRpcError> {
         let info: serde_json::Value = self
             .rpc
             .send_json_blocking(&self.client, &self.rpc.get_blockchain_info())?;
         if let Some(time) = info.get("mediantime").and_then(|t| t.as_u64()) {
             return Ok(time);
         }
-        return Err(anyhow!("Could not fetch median time"));
+        Err(BitcoinRpcError::Other(
+            "Could not fetch median time".to_string(),
+        ))
     }
 
-    fn get_block_count(&self) -> anyhow::Result<u64> {
+    fn get_block_count(&self) -> Result<u64, BitcoinRpcError> {
         Ok(self
             .rpc
             .send_json_blocking(&self.client, &self.rpc.get_block_count())?)
