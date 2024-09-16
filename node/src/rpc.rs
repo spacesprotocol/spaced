@@ -23,9 +23,8 @@ use protocol::{
         OutPoint,
     },
     constants::ChainAnchor,
-    hasher::{BaseHash, KeyHasher, SpaceHash},
+    hasher::{BaseHash, SpaceHash},
     prepare::DataSource,
-    sname::{NameLike, SName},
     FullSpaceOut, SpaceOut,
 };
 use serde::{Deserialize, Serialize};
@@ -43,7 +42,7 @@ use crate::{
     config::ExtendedNetwork,
     node::ValidatedBlock,
     source::BitcoinRpc,
-    store::{ChainState, LiveSnapshot, Sha256},
+    store::{ChainState, LiveSnapshot},
     wallets::{AddressKind, JointBalance, RpcWallet, TxResponse, WalletCommand, WalletResponse},
 };
 
@@ -97,10 +96,11 @@ pub trait Rpc {
     async fn get_server_info(&self) -> Result<ServerInfo, ErrorObjectOwned>;
 
     #[method(name = "getspace")]
-    async fn get_space(&self, space: &str) -> Result<Option<FullSpaceOut>, ErrorObjectOwned>;
+    async fn get_space(&self, space_hash: &str) -> Result<Option<FullSpaceOut>, ErrorObjectOwned>;
 
     #[method(name = "getspaceowner")]
-    async fn get_space_owner(&self, space: &str) -> Result<Option<OutPoint>, ErrorObjectOwned>;
+    async fn get_space_owner(&self, space_hash: &str)
+        -> Result<Option<OutPoint>, ErrorObjectOwned>;
 
     #[method(name = "getspaceout")]
     async fn get_spaceout(&self, outpoint: OutPoint) -> Result<Option<SpaceOut>, ErrorObjectOwned>;
@@ -603,16 +603,8 @@ impl RpcServer for RpcServerImpl {
         Ok(ServerInfo { chain, tip })
     }
 
-    async fn get_space(&self, space: &str) -> Result<Option<FullSpaceOut>, ErrorObjectOwned> {
-        let space = SName::from_str(&space).map_err(|_| {
-            ErrorObjectOwned::owned(
-                -1,
-                "must be a valid canonical space name (e.g. @bitcoin)",
-                None::<String>,
-            )
-        })?;
-
-        let space_hash = SpaceHash::from(Sha256::hash(space.to_bytes()));
+    async fn get_space(&self, space_hash: &str) -> Result<Option<FullSpaceOut>, ErrorObjectOwned> {
+        let space_hash = space_hash_from_string(space_hash)?;
         let info = self
             .store
             .get_space(space_hash)
@@ -621,16 +613,11 @@ impl RpcServer for RpcServerImpl {
         Ok(info)
     }
 
-    async fn get_space_owner(&self, space: &str) -> Result<Option<OutPoint>, ErrorObjectOwned> {
-        let space = SName::from_str(space).map_err(|_| {
-            ErrorObjectOwned::owned(
-                -1,
-                "must be a valid canonical space name (e.g. @bitcoin)",
-                None::<String>,
-            )
-        })?;
-        let space_hash = SpaceHash::from(Sha256::hash(space.to_bytes()));
-
+    async fn get_space_owner(
+        &self,
+        space_hash: &str,
+    ) -> Result<Option<OutPoint>, ErrorObjectOwned> {
+        let space_hash = space_hash_from_string(space_hash)?;
         let info = self
             .store
             .get_space_outpoint(space_hash)
@@ -935,4 +922,22 @@ impl AsyncChainState {
             .await?;
         resp_rx.await?
     }
+}
+
+fn space_hash_from_string(space_hash: &str) -> Result<SpaceHash, ErrorObjectOwned> {
+    let mut hash = [0u8; 32];
+    hex::decode_to_slice(space_hash, &mut hash).map_err(|_| {
+        ErrorObjectOwned::owned(
+            -1,
+            "expected a 32-byte hex encoded space hash",
+            None::<String>,
+        )
+    })?;
+    SpaceHash::from_raw(hash).map_err(|_| {
+        ErrorObjectOwned::owned(
+            -1,
+            "expected a 32-byte hex encoded space hash",
+            None::<String>,
+        )
+    })
 }

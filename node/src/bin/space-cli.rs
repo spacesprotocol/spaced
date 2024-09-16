@@ -1,6 +1,6 @@
 extern crate core;
 
-use std::{fs, path::PathBuf};
+use std::{fs, path::PathBuf, str::FromStr};
 
 use base64::{prelude::BASE64_STANDARD, Engine};
 use clap::{Parser, Subcommand};
@@ -10,7 +10,9 @@ use jsonrpsee::{
 };
 use protocol::{
     bitcoin::{Amount, FeeRate, OutPoint, Txid},
+    hasher::{KeyHasher, SpaceHash},
     opcodes::OP_SETALL,
+    sname::{NameLike, SName},
     Covenant, FullSpaceOut,
 };
 use serde::{Deserialize, Serialize};
@@ -20,6 +22,7 @@ use spaced::{
         BidParams, ExecuteParams, OpenParams, RegisterParams, RpcClient, RpcWalletRequest,
         RpcWalletTxBuilder, SendCoinsParams, TransferSpacesParams,
     },
+    store::Sha256,
     wallets::AddressKind,
 };
 
@@ -222,6 +225,12 @@ enum Commands {
     /// compatible with most bitcoin wallets
     #[command(name = "getnewaddress")]
     GetCoinAddress,
+    /// Calculate a spacehash from the specified space name
+    #[command(name = "spacehash")]
+    SpaceHash {
+        /// The space name
+        space: String,
+    },
 }
 
 struct SpaceCli {
@@ -360,6 +369,13 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn space_hash(spaceish: &str) -> anyhow::Result<String> {
+    let space = normalize_space(&spaceish);
+    let sname = SName::from_str(&space)?;
+    let spacehash = SpaceHash::from(Sha256::hash(sname.to_bytes()));
+    Ok(hex::encode(spacehash.as_slice()))
+}
+
 async fn handle_commands(
     cli: &SpaceCli,
     command: Commands,
@@ -404,8 +420,8 @@ async fn handle_commands(
             println!("{} sat", Amount::from_sat(response).to_string());
         }
         Commands::GetSpace { space } => {
-            let space = normalize_space(&space);
-            let response = cli.client.get_space(&space).await?;
+            let space_hash = space_hash(&space).map_err(|e| ClientError::Custom(e.to_string()))?;
+            let response = cli.client.get_space(&space_hash).await?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
         Commands::GetSpaceOut { outpoint } => {
@@ -579,6 +595,12 @@ async fn handle_commands(
                 .wallet_bump_fee(&cli.wallet, txid, fee_rate)
                 .await?;
             println!("{}", serde_json::to_string_pretty(&response)?);
+        }
+        Commands::SpaceHash { space } => {
+            println!(
+                "{}",
+                space_hash(&space).map_err(|e| ClientError::Custom(e.to_string()))?
+            );
         }
     }
 
