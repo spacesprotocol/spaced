@@ -460,7 +460,7 @@ impl Iterator for BuilderIterator<'_> {
                 let mut amounts = Vec::with_capacity(params.opens.len());
 
                 for req in params.opens {
-                    let tap = Builder::create_open_tap_data(self.wallet.network, &req.name)
+                    let tap = Builder::create_open_tap_data(self.wallet.config.network, &req.name)
                         .context("could not initialize tap data for name");
                     if tap.is_err() {
                         return Some(Err(tap.unwrap_err()));
@@ -472,7 +472,7 @@ impl Iterator for BuilderIterator<'_> {
                 let mut contexts = Vec::with_capacity(params.executes.len());
                 for execute in params.executes {
                     let signing_info = SpaceScriptSigningInfo::new(
-                        self.wallet.network,
+                        self.wallet.config.network,
                         execute.script.to_nop_script(),
                     );
                     if signing_info.is_err() {

@@ -52,10 +52,7 @@ const WALLET_SPACE_MAGIC: &[u8; 12] = b"WALLET_SPACE";
 const WALLET_COIN_MAGIC: &[u8; 12] = b"WALLET_COINS";
 
 pub struct SpacesWallet {
-    pub name: String,
-    pub data_dir: PathBuf,
-    pub start_block: u32,
-    pub network: Network,
+    pub config: WalletConfig,
     pub coins: bdk_wallet::wallet::Wallet,
     pub spaces: bdk_wallet::wallet::Wallet,
     pub coins_db: bdk_file_store::Store<ChangeSet>,
@@ -169,12 +166,12 @@ impl WalletExport {
 
 impl SpacesWallet {
     pub fn name(&self) -> &str {
-        &self.name
+        &self.config.name
     }
 
     pub fn new(config: WalletConfig) -> anyhow::Result<Self> {
         if !config.data_dir.exists() {
-            std::fs::create_dir_all(config.data_dir.clone())?;
+            fs::create_dir_all(config.data_dir.clone())?;
         }
 
         let spaces_path = config.data_dir.join("spaces.db");
@@ -212,10 +209,7 @@ impl SpacesWallet {
         )?;
 
         let wallet = Self {
-            name: config.name,
-            start_block: config.start_block,
-            data_dir: config.data_dir,
-            network: config.network,
+            config,
             coins: coins_wallet,
             spaces: spaces_wallet,
             coins_db,
@@ -224,6 +218,15 @@ impl SpacesWallet {
 
         wallet.clear_unused_signing_info();
         Ok(wallet)
+    }
+
+    pub fn rebuild(self) -> anyhow::Result<Self> {
+        let config = self.config;
+        drop(self.spaces_db);
+        drop(self.coins_db);
+        fs::remove_file(config.data_dir.join("spaces.db"))?;
+        fs::remove_file(config.data_dir.join("coins.db"))?;
+        Ok(SpacesWallet::new(config)?)
     }
 
     pub fn get_info(&self) -> WalletInfo {
@@ -263,8 +266,8 @@ impl SpacesWallet {
         });
 
         WalletInfo {
-            label: self.name.clone(),
-            start_block: self.start_block,
+            label: self.config.name.clone(),
+            start_block: self.config.start_block,
             tip: self.coins.local_chain().tip().height(),
             descriptors,
         }
@@ -297,8 +300,8 @@ impl SpacesWallet {
         WalletExport {
             descriptor,
             spaces_descriptor,
-            block_height: self.start_block,
-            label: self.name.clone(),
+            block_height: self.config.start_block,
+            label: self.config.name.clone(),
         }
     }
 
@@ -603,14 +606,14 @@ impl SpacesWallet {
     }
 
     fn get_signing_info(&self, script: &ScriptBuf) -> Option<Vec<u8>> {
-        let script_info_dir = self.data_dir.join("script_solutions");
+        let script_info_dir = self.config.data_dir.join("script_solutions");
         let filename = hex::encode(script.as_bytes());
         let file_path = script_info_dir.join(filename);
         std::fs::read(file_path).ok()
     }
 
     fn save_signing_info(&self, script: ScriptBuf, raw: Vec<u8>) -> anyhow::Result<()> {
-        let script_info_dir = self.data_dir.join("script_solutions");
+        let script_info_dir = self.config.data_dir.join("script_solutions");
         std::fs::create_dir_all(&script_info_dir)
             .context("could not create script_info directory")?;
         let filename = hex::encode(script.as_bytes());
@@ -620,7 +623,7 @@ impl SpacesWallet {
     }
 
     fn clear_unused_signing_info(&self) {
-        let script_info_dir = self.data_dir.join("script_solutions");
+        let script_info_dir = self.config.data_dir.join("script_solutions");
         let one_week_ago = SystemTime::now() - Duration::from_secs(7 * 24 * 60 * 60);
 
         let entries = match fs::read_dir(&script_info_dir) {

@@ -26,10 +26,7 @@ fn test_block_fetching_from_bitcoin_rpc() -> Result<()> {
         &rig.bitcoind.rpc_url(),
         BitcoinRpcAuth::UserPass("user".to_string(), "password".to_string()),
     ));
-    let (fetcher, receiver) = BlockFetcher::new(
-        fetcher_rpc.clone(),
-        8
-    );
+    let (fetcher, receiver) = BlockFetcher::new(fetcher_rpc.clone(), 8);
     fetcher.start(ChainAnchor { hash, height: 0 });
 
     let timeout = Duration::from_secs(5);

@@ -269,7 +269,7 @@ impl RpcWallet {
                 _ = resp.send(balance);
             }
             WalletCommand::UnloadWallet => {
-                info!("Unloading wallet '{}' ...", wallet.name);
+                info!("Unloading wallet '{}' ...", wallet.name());
             }
         }
         Ok(())

@@ -12,14 +12,14 @@ async fn setup() -> anyhow::Result<TestRig> {
 }
 
 async fn it_should_create_and_fund_wallet(rig: &TestRig) -> anyhow::Result<()> {
-    let name = "example".to_string();
-    rig.spaced.client.wallet_create(name.clone()).await?;
+    let name = "example";
+    rig.spaced.client.wallet_create(name).await?;
 
     // get an address from the wallet to fund it
     let addr = Address::from_str(
         &rig.spaced
             .client
-            .wallet_get_new_address(name.clone(), AddressKind::Coin)
+            .wallet_get_new_address(name, AddressKind::Coin)
             .await?,
     )?
     .assume_checked();
@@ -28,9 +28,9 @@ async fn it_should_create_and_fund_wallet(rig: &TestRig) -> anyhow::Result<()> {
     // mine the transaction
     rig.mine_blocks(1, None).await?;
     // wait for the wallet to sync
-    rig.wait_until_wallet_synced(&name).await?;
+    rig.wait_until_wallet_synced(name).await?;
 
-    let balance = rig.spaced.client.wallet_get_balance(name.clone()).await?;
+    let balance = rig.spaced.client.wallet_get_balance(name).await?;
     assert_eq!(
         balance.confirmed.total,
         Amount::from_sat(1000_000),
@@ -51,10 +51,10 @@ async fn it_should_handle_simple_reorg(rig: &TestRig) -> anyhow::Result<()> {
     rig.mine_empty_block().await?;
     assert_eq!(103, rig.get_block_count().await?);
 
-    let name = "example".to_string();
+    let name = "example";
     rig.wait_until_wallet_synced(&name).await?;
 
-    let balance = rig.spaced.client.wallet_get_balance(name.clone()).await?;
+    let balance = rig.spaced.client.wallet_get_balance(name).await?;
     assert_eq!(
         balance.confirmed.total,
         Amount::from_sat(0),
@@ -65,7 +65,7 @@ async fn it_should_handle_simple_reorg(rig: &TestRig) -> anyhow::Result<()> {
     rig.mine_blocks(1, None).await?;
     rig.wait_until_wallet_synced(&name).await?;
 
-    let balance = rig.spaced.client.wallet_get_balance(name.clone()).await?;
+    let balance = rig.spaced.client.wallet_get_balance(name).await?;
     assert_eq!(
         balance.confirmed.total,
         Amount::from_sat(1000_000),
