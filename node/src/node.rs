@@ -16,13 +16,16 @@ use protocol::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::store::{ChainState, ChainStore, LiveSnapshot, LiveStore, Sha256};
+use crate::{
+    source::BitcoinRpcError,
+    store::{ChainState, ChainStore, LiveSnapshot, LiveStore, Sha256},
+};
 
 pub trait BlockSource {
-    fn get_block_hash(&self, height: u32) -> Result<BlockHash>;
-    fn get_block(&self, hash: &BlockHash) -> Result<Block>;
-    fn get_median_time(&self) -> anyhow::Result<u64>;
-    fn get_block_count(&self) -> Result<u64>;
+    fn get_block_hash(&self, height: u32) -> Result<BlockHash, BitcoinRpcError>;
+    fn get_block(&self, hash: &BlockHash) -> Result<Block, BitcoinRpcError>;
+    fn get_median_time(&self) -> Result<u64, BitcoinRpcError>;
+    fn get_block_count(&self) -> Result<u64, BitcoinRpcError>;
 }
 
 #[derive(Debug, Clone)]

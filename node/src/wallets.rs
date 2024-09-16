@@ -284,8 +284,7 @@ impl RpcWallet {
         mut shutdown: broadcast::Receiver<()>,
         num_workers: usize,
     ) -> anyhow::Result<()> {
-        let (fetcher, receiver) =
-            BlockFetcher::new(source.rpc.clone(), source.client.clone(), num_workers);
+        let (fetcher, receiver) = BlockFetcher::new(source.clone(), num_workers);
 
         let mut wallet_tip = {
             let tip = wallet.coins.local_chain().tip();

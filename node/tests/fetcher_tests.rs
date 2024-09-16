@@ -5,8 +5,7 @@ use std::{
 
 use anyhow::Result;
 use protocol::{bitcoin::BlockHash, constants::ChainAnchor};
-use reqwest::blocking::Client;
-use spaced::source::{BitcoinRpc, BitcoinRpcAuth, BlockEvent, BlockFetcher};
+use spaced::source::{BitcoinBlockSource, BitcoinRpc, BitcoinRpcAuth, BlockEvent, BlockFetcher};
 use testutil::TestRig;
 
 async fn setup(blocks: u64) -> Result<(TestRig, u64, BlockHash)> {
@@ -21,16 +20,16 @@ async fn setup(blocks: u64) -> Result<(TestRig, u64, BlockHash)> {
 fn test_block_fetching_from_bitcoin_rpc() -> Result<()> {
     const GENERATED_BLOCKS: u64 = 10;
 
-    let (rig, mut height, hash) = tokio::runtime::Runtime::new()?
-        .block_on(setup(GENERATED_BLOCKS))?;
-    let fetcher_rpc = BitcoinRpc::new(
+    let (rig, mut height, hash) =
+        tokio::runtime::Runtime::new()?.block_on(setup(GENERATED_BLOCKS))?;
+    let fetcher_rpc = BitcoinBlockSource::new(BitcoinRpc::new(
         &rig.bitcoind.rpc_url(),
         BitcoinRpcAuth::UserPass("user".to_string(), "password".to_string()),
+    ));
+    let (fetcher, receiver) = BlockFetcher::new(
+        fetcher_rpc.clone(),
+        8
     );
-
-    let client = Client::new();
-    let (fetcher, receiver) = BlockFetcher::new(fetcher_rpc.clone(), client.clone(), 8);
-
     fetcher.start(ChainAnchor { hash, height: 0 });
 
     let timeout = Duration::from_secs(5);

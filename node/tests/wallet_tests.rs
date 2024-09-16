@@ -1,7 +1,7 @@
 use std::str::FromStr;
+
 use protocol::bitcoin::{Address, Amount};
-use spaced::rpc::RpcClient;
-use spaced::wallets::AddressKind;
+use spaced::{rpc::RpcClient, wallets::AddressKind};
 use testutil::TestRig;
 
 async fn setup() -> anyhow::Result<TestRig> {
@@ -22,7 +22,7 @@ async fn it_should_create_and_fund_wallet(rig: &TestRig) -> anyhow::Result<()> {
             .wallet_get_new_address(name.clone(), AddressKind::Coin)
             .await?,
     )?
-        .assume_checked();
+    .assume_checked();
     // have the rig send some coins
     rig.send(&addr, Amount::from_sat(1000_000)).await?;
     // mine the transaction
