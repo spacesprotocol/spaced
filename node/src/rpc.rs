@@ -97,10 +97,10 @@ pub trait Rpc {
     async fn get_server_info(&self) -> Result<ServerInfo, ErrorObjectOwned>;
 
     #[method(name = "getspace")]
-    async fn get_space(&self, space: String) -> Result<Option<FullSpaceOut>, ErrorObjectOwned>;
+    async fn get_space(&self, space: &str) -> Result<Option<FullSpaceOut>, ErrorObjectOwned>;
 
     #[method(name = "getspaceowner")]
-    async fn get_space_owner(&self, space: String) -> Result<Option<OutPoint>, ErrorObjectOwned>;
+    async fn get_space_owner(&self, space: &str) -> Result<Option<OutPoint>, ErrorObjectOwned>;
 
     #[method(name = "getspaceout")]
     async fn get_spaceout(&self, outpoint: OutPoint) -> Result<Option<SpaceOut>, ErrorObjectOwned>;
@@ -118,62 +118,58 @@ pub trait Rpc {
     ) -> Result<Option<ValidatedBlock>, ErrorObjectOwned>;
 
     #[method(name = "walletload")]
-    async fn wallet_load(&self, name: String) -> Result<(), ErrorObjectOwned>;
+    async fn wallet_load(&self, name: &str) -> Result<(), ErrorObjectOwned>;
 
     #[method(name = "walletimport")]
-    async fn wallet_import(&self, content: String) -> Result<(), ErrorObjectOwned>;
+    async fn wallet_import(&self, content: &str) -> Result<(), ErrorObjectOwned>;
 
     #[method(name = "walletgetinfo")]
-    async fn wallet_get_info(&self, name: String) -> Result<WalletInfo, ErrorObjectOwned>;
+    async fn wallet_get_info(&self, name: &str) -> Result<WalletInfo, ErrorObjectOwned>;
 
     #[method(name = "walletexport")]
-    async fn wallet_export(&self, name: String) -> Result<String, ErrorObjectOwned>;
+    async fn wallet_export(&self, name: &str) -> Result<String, ErrorObjectOwned>;
 
     #[method(name = "walletcreate")]
-    async fn wallet_create(&self, name: String) -> Result<(), ErrorObjectOwned>;
+    async fn wallet_create(&self, name: &str) -> Result<(), ErrorObjectOwned>;
 
     #[method(name = "walletsendrequest")]
     async fn wallet_send_request(
         &self,
-        wallet: String,
+        wallet: &str,
         request: RpcWalletTxBuilder,
     ) -> Result<WalletResponse, ErrorObjectOwned>;
 
     #[method(name = "walletgetnewaddress")]
     async fn wallet_get_new_address(
         &self,
-        wallet: String,
+        wallet: &str,
         kind: AddressKind,
     ) -> Result<String, ErrorObjectOwned>;
 
     #[method(name = "walletbumpfee")]
     async fn wallet_bump_fee(
         &self,
-        wallet: String,
+        wallet: &str,
         txid: Txid,
         fee_rate: FeeRate,
     ) -> Result<Vec<TxResponse>, ErrorObjectOwned>;
 
     #[method(name = "walletlistspaces")]
-    async fn wallet_list_spaces(
-        &self,
-        wallet: String,
-    ) -> Result<Vec<FullSpaceOut>, ErrorObjectOwned>;
+    async fn wallet_list_spaces(&self, wallet: &str)
+        -> Result<Vec<FullSpaceOut>, ErrorObjectOwned>;
 
     #[method(name = "walletlistunspent")]
-    async fn wallet_list_unspent(
-        &self,
-        wallet: String,
-    ) -> Result<Vec<LocalOutput>, ErrorObjectOwned>;
+    async fn wallet_list_unspent(&self, wallet: &str)
+        -> Result<Vec<LocalOutput>, ErrorObjectOwned>;
 
     #[method(name = "walletlistauctionoutputs")]
     async fn wallet_list_auction_outputs(
         &self,
-        wallet: String,
+        wallet: &str,
     ) -> Result<Vec<DoubleUtxo>, ErrorObjectOwned>;
 
     #[method(name = "walletgetbalance")]
-    async fn wallet_get_balance(&self, wallet: String) -> Result<JointBalance, ErrorObjectOwned>;
+    async fn wallet_get_balance(&self, wallet: &str) -> Result<JointBalance, ErrorObjectOwned>;
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -296,29 +292,25 @@ impl WalletManager {
         let mut file = fs::File::create(wallet_export_path)?;
         file.write_all(wallet.to_string().as_bytes())?;
 
-        self.load_wallet(client, wallet.label).await?;
+        self.load_wallet(client, &wallet.label).await?;
         Ok(())
     }
 
-    pub async fn export_wallet(&self, name: String) -> anyhow::Result<String> {
-        let wallet_dir = self.data_dir.join(&name);
+    pub async fn export_wallet(&self, name: &str) -> anyhow::Result<String> {
+        let wallet_dir = self.data_dir.join(name);
         if !wallet_dir.exists() {
             return Err(anyhow!("Wallet does not exist"));
         }
         Ok(fs::read_to_string(wallet_dir.join("wallet.json"))?)
     }
 
-    pub async fn create_wallet(
-        &self,
-        client: &reqwest::Client,
-        name: String,
-    ) -> anyhow::Result<()> {
+    pub async fn create_wallet(&self, client: &reqwest::Client, name: &str) -> anyhow::Result<()> {
         let mnemonic: GeneratedKey<_, Tap> =
             Mnemonic::generate((WordCount::Words12, Language::English))
                 .map_err(|_| anyhow!("Mnemonic generation error"))?;
 
         let start_block = self.get_wallet_start_block(client).await?;
-        self.setup_new_wallet(name.clone(), mnemonic.to_string(), start_block)?;
+        self.setup_new_wallet(name.to_string(), mnemonic.to_string(), start_block)?;
         self.load_wallet(client, name).await?;
         Ok(())
     }
@@ -440,11 +432,11 @@ impl WalletManager {
         Ok(true)
     }
 
-    pub async fn load_wallet(&self, client: &reqwest::Client, name: String) -> anyhow::Result<()> {
-        let wallet_dir = self.data_dir.join(name.clone());
+    pub async fn load_wallet(&self, client: &reqwest::Client, name: &str) -> anyhow::Result<()> {
+        let wallet_dir = self.data_dir.join(name);
         if !wallet_dir.exists() {
             if self
-                .migrate_legacy_v0_0_1_wallet(name.clone(), wallet_dir.clone())
+                .migrate_legacy_v0_0_1_wallet(name.to_string(), wallet_dir.clone())
                 .await?
             {
                 info!("Migrated legacy wallet {}", name);
@@ -461,7 +453,7 @@ impl WalletManager {
         let mut wallet = SpacesWallet::new(WalletConfig {
             start_block: export.block_height,
             data_dir: wallet_dir,
-            name: name.clone(),
+            name: name.to_string(),
             network,
             genesis_hash,
             coins_descriptors: export.descriptors(),
@@ -482,7 +474,7 @@ impl WalletManager {
 
         self.wallet_loader.send(loaded_wallet).await?;
         let mut wallets = self.wallets.write().await;
-        wallets.insert(name, rpc_wallet);
+        wallets.insert(name.to_string(), rpc_wallet);
         Ok(())
     }
 
@@ -611,7 +603,7 @@ impl RpcServer for RpcServerImpl {
         Ok(ServerInfo { chain, tip })
     }
 
-    async fn get_space(&self, space: String) -> Result<Option<FullSpaceOut>, ErrorObjectOwned> {
+    async fn get_space(&self, space: &str) -> Result<Option<FullSpaceOut>, ErrorObjectOwned> {
         let space = SName::from_str(&space).map_err(|_| {
             ErrorObjectOwned::owned(
                 -1,
@@ -629,8 +621,8 @@ impl RpcServer for RpcServerImpl {
         Ok(info)
     }
 
-    async fn get_space_owner(&self, space: String) -> Result<Option<OutPoint>, ErrorObjectOwned> {
-        let space = SName::from_str(&space).map_err(|_| {
+    async fn get_space_owner(&self, space: &str) -> Result<Option<OutPoint>, ErrorObjectOwned> {
+        let space = SName::from_str(space).map_err(|_| {
             ErrorObjectOwned::owned(
                 -1,
                 "must be a valid canonical space name (e.g. @bitcoin)",
@@ -688,7 +680,7 @@ impl RpcServer for RpcServerImpl {
         Ok(data)
     }
 
-    async fn wallet_load(&self, name: String) -> Result<(), ErrorObjectOwned> {
+    async fn wallet_load(&self, name: &str) -> Result<(), ErrorObjectOwned> {
         self.wallet_manager
             .load_wallet(&self.client, name)
             .await
@@ -697,16 +689,16 @@ impl RpcServer for RpcServerImpl {
             })
     }
 
-    async fn wallet_import(&self, content: String) -> Result<(), ErrorObjectOwned> {
+    async fn wallet_import(&self, content: &str) -> Result<(), ErrorObjectOwned> {
         self.wallet_manager
-            .import_wallet(&self.client, &content)
+            .import_wallet(&self.client, content)
             .await
             .map_err(|error| {
                 ErrorObjectOwned::owned(RPC_WALLET_NOT_LOADED, error.to_string(), None::<String>)
             })
     }
 
-    async fn wallet_get_info(&self, wallet: String) -> Result<WalletInfo, ErrorObjectOwned> {
+    async fn wallet_get_info(&self, wallet: &str) -> Result<WalletInfo, ErrorObjectOwned> {
         self.wallet(&wallet)
             .await?
             .send_get_info()
@@ -714,7 +706,7 @@ impl RpcServer for RpcServerImpl {
             .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))
     }
 
-    async fn wallet_export(&self, name: String) -> Result<String, ErrorObjectOwned> {
+    async fn wallet_export(&self, name: &str) -> Result<String, ErrorObjectOwned> {
         self.wallet_manager
             .export_wallet(name)
             .await
@@ -723,9 +715,9 @@ impl RpcServer for RpcServerImpl {
             })
     }
 
-    async fn wallet_create(&self, name: String) -> Result<(), ErrorObjectOwned> {
+    async fn wallet_create(&self, name: &str) -> Result<(), ErrorObjectOwned> {
         self.wallet_manager
-            .create_wallet(&self.client, name.clone())
+            .create_wallet(&self.client, name)
             .await
             .map_err(|error| {
                 ErrorObjectOwned::owned(RPC_WALLET_NOT_LOADED, error.to_string(), None::<String>)
@@ -733,7 +725,7 @@ impl RpcServer for RpcServerImpl {
     }
     async fn wallet_send_request(
         &self,
-        wallet: String,
+        wallet: &str,
         request: RpcWalletTxBuilder,
     ) -> Result<WalletResponse, ErrorObjectOwned> {
         let result = self
@@ -747,7 +739,7 @@ impl RpcServer for RpcServerImpl {
 
     async fn wallet_get_new_address(
         &self,
-        wallet: String,
+        wallet: &str,
         kind: AddressKind,
     ) -> Result<String, ErrorObjectOwned> {
         self.wallet(&wallet)
@@ -759,7 +751,7 @@ impl RpcServer for RpcServerImpl {
 
     async fn wallet_bump_fee(
         &self,
-        wallet: String,
+        wallet: &str,
         txid: Txid,
         fee_rate: FeeRate,
     ) -> Result<Vec<TxResponse>, ErrorObjectOwned> {
@@ -772,7 +764,7 @@ impl RpcServer for RpcServerImpl {
 
     async fn wallet_list_spaces(
         &self,
-        wallet: String,
+        wallet: &str,
     ) -> Result<Vec<FullSpaceOut>, ErrorObjectOwned> {
         self.wallet(&wallet)
             .await?
@@ -783,7 +775,7 @@ impl RpcServer for RpcServerImpl {
 
     async fn wallet_list_unspent(
         &self,
-        wallet: String,
+        wallet: &str,
     ) -> Result<Vec<LocalOutput>, ErrorObjectOwned> {
         self.wallet(&wallet)
             .await?
@@ -794,7 +786,7 @@ impl RpcServer for RpcServerImpl {
 
     async fn wallet_list_auction_outputs(
         &self,
-        wallet: String,
+        wallet: &str,
     ) -> Result<Vec<DoubleUtxo>, ErrorObjectOwned> {
         self.wallet(&wallet)
             .await?
@@ -803,7 +795,7 @@ impl RpcServer for RpcServerImpl {
             .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))
     }
 
-    async fn wallet_get_balance(&self, wallet: String) -> Result<JointBalance, ErrorObjectOwned> {
+    async fn wallet_get_balance(&self, wallet: &str) -> Result<JointBalance, ErrorObjectOwned> {
         self.wallet(&wallet)
             .await?
             .send_get_balance()

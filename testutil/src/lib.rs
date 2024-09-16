@@ -115,11 +115,7 @@ impl TestRig {
                 .await
                 .expect("handle")? as u32;
 
-            let info = self
-                .spaced
-                .client
-                .wallet_get_info(wallet_name.to_string())
-                .await?;
+            let info = self.spaced.client.wallet_get_info(wallet_name).await?;
             if count == info.tip {
                 return Ok(());
             }
