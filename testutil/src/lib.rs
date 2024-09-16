@@ -19,6 +19,7 @@ use ::spaced::{
 use anyhow::Result;
 use bitcoind::{
     anyhow,
+    anyhow::anyhow,
     bitcoincore_rpc::{
         bitcoincore_rpc_json::{GetBlockTemplateModes, GetBlockTemplateRules},
         RpcApi,
@@ -86,6 +87,22 @@ impl TestRig {
                 return Ok(());
             }
 
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Waits until spaced tip == specified best_hash or specified time out
+    pub async fn wait_until_tip(&self, tip: BlockHash, timeout: Duration) -> Result<()> {
+        let start_time = tokio::time::Instant::now();
+
+        loop {
+            let info = self.spaced.client.get_server_info().await?;
+            if info.tip.hash == tip {
+                return Ok(());
+            }
+            if start_time.elapsed() >= timeout {
+                return Err(anyhow!("Rimed out waiting for tip {:?}", tip));
+            }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }

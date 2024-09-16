@@ -320,6 +320,29 @@ impl BlockFetcher {
         self.job_id.fetch_add(1, Ordering::SeqCst);
     }
 
+    fn should_sync(
+        source: &BitcoinBlockSource,
+        start: ChainAnchor,
+    ) -> Result<Option<ChainAnchor>, BlockFetchError> {
+        let tip = source.get_best_chain()?;
+        if start.height > tip.height {
+            return Err(BlockFetchError::BlockMismatch);
+        }
+
+        // Ensure start block is still in the best chain
+        let start_hash: BlockHash = source.get_block_hash(start.height)?;
+        if start.hash != start_hash {
+            return Err(BlockFetchError::BlockMismatch);
+        }
+
+        // If the chain didn't advance and the hashes match, no rescan is needed
+        if tip.height == start.height && tip.hash == start.hash {
+            return Ok(None);
+        }
+
+        Ok(Some(tip))
+    }
+
     pub fn start(&self, mut checkpoint: ChainAnchor) {
         self.stop();
 
@@ -343,27 +366,28 @@ impl BlockFetcher {
                 }
                 last_check = Instant::now();
 
-                let tip: u32 = match task_src.get_block_count() {
-                    Ok(t) => t as _,
+                let tip = match BlockFetcher::should_sync(&task_src, checkpoint) {
+                    Ok(t) => t,
                     Err(e) => {
-                        _ = task_sender.send(BlockEvent::Error(BlockFetchError::RpcError(e)));
+                        _ = task_sender.send(BlockEvent::Error(e));
                         return;
                     }
                 };
 
-                if tip > checkpoint.height {
+                if let Some(tip) = tip {
                     let res = Self::run_workers(
                         job_id,
                         current_task.clone(),
                         task_src.clone(),
                         task_sender.clone(),
                         checkpoint,
-                        tip,
+                        tip.height,
                         num_workers,
                     );
 
                     match res {
                         Ok(new_tip) => {
+                            info!("new tip set: {}", new_tip.hash);
                             checkpoint = new_tip;
                         }
                         Err(e) => {
@@ -723,5 +747,23 @@ impl BlockSource for BitcoinBlockSource {
         Ok(self
             .rpc
             .send_json_blocking(&self.client, &self.rpc.get_block_count())?)
+    }
+
+    fn get_best_chain(&self) -> Result<ChainAnchor, BitcoinRpcError> {
+        #[derive(Deserialize)]
+        struct Info {
+            #[serde(rename = "blocks")]
+            height: u64,
+            #[serde(rename = "bestblockhash")]
+            hash: BlockHash,
+        }
+        let info: Info = self
+            .rpc
+            .send_json_blocking(&self.client, &self.rpc.get_blockchain_info())?;
+
+        Ok(ChainAnchor {
+            hash: info.hash,
+            height: info.height as _,
+        })
     }
 }
