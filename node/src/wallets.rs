@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, str::FromStr, time::Duration};
 use anyhow::anyhow;
 use clap::ValueEnum;
 use futures::{stream::FuturesUnordered, StreamExt};
-use log::info;
+use log::{info, warn};
 use protocol::{
     bitcoin::Txid,
     constants::ChainAnchor,
@@ -28,7 +28,8 @@ use wallet::{
     },
     DoubleUtxo, SpacesWallet, WalletInfo,
 };
-
+use wallet::bdk_wallet::chain::BlockId;
+use wallet::bdk_wallet::chain::local_chain::CheckPoint;
 use crate::{
     config::ExtendedNetwork,
     node::BlockSource,
@@ -324,19 +325,37 @@ impl RpcWallet {
                         }
                     }
                     BlockEvent::Error(e) if matches!(e, BlockFetchError::BlockMismatch) => {
-                        let local_chain = wallet.coins.local_chain();
-                        let restore_point = local_chain
-                            .iter_checkpoints()
-                            .find_map(|x| {
-                                if wallet_tip.height - x.height() > 12 {
-                                    Some(x.clone())
-                                } else {
-                                    None
-                                }
-                            })
-                            .unwrap_or(
-                                local_chain.iter_checkpoints().last().expect("a checkpoint"),
-                            );
+                        let mut checkpoint_in_chain = None;
+                        let best_chain = source.get_best_chain()?;
+                        for cp in wallet.coins.local_chain().iter_checkpoints() {
+                            if cp.height() > best_chain.height {
+                                continue;
+                            }
+
+                            let hash = source.get_block_hash(cp.height())?;
+                            if cp.height() != 0 && hash == cp.hash() {
+                                checkpoint_in_chain = Some(cp);
+                                break;
+                            }
+                        }
+
+                        let restore_point = match checkpoint_in_chain {
+                            None => {
+                                // We couldn't find a restore point
+                                warn!("Rebuilding wallet `{}`", wallet.config.name);
+                                let birthday = wallet.config.start_block;
+                                let hash = source.get_block_hash(birthday)?;
+                                let cp = CheckPoint::new(BlockId {
+                                    height: birthday,
+                                    hash,
+                                });
+                                wallet = wallet.rebuild()?;
+                                wallet.coins.insert_checkpoint(cp.block_id())?;
+                                wallet.spaces.insert_checkpoint(cp.block_id())?;
+                                cp
+                            }
+                            Some(cp) => cp
+                        };
 
                         wallet_tip.height = restore_point.block_id().height;
                         wallet_tip.hash = restore_point.block_id().hash;
