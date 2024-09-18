@@ -387,7 +387,6 @@ impl BlockFetcher {
 
                     match res {
                         Ok(new_tip) => {
-                            info!("new tip set: {}", new_tip.hash);
                             checkpoint = new_tip;
                         }
                         Err(e) => {
