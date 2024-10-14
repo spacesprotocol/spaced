@@ -17,6 +17,7 @@ use bdk::{
 use jsonrpsee::{core::async_trait, proc_macros::rpc, server::Server, types::ErrorObjectOwned};
 use log::info;
 use protocol::{
+    Covenant,
     bitcoin::{
         bip32::Xpriv,
         Network::{Regtest, Testnet},
@@ -110,6 +111,9 @@ pub trait Rpc {
 
     #[method(name = "getrollout")]
     async fn get_rollout(&self, target: usize) -> Result<Vec<(u32, SpaceHash)>, ErrorObjectOwned>;
+
+    #[method(name = "getrolloutestimate")]
+    async fn get_rollout_estimate(&self, target: usize) -> Result<Vec<(u32, String)>, ErrorObjectOwned>;
 
     #[method(name = "getblockdata")]
     async fn get_block_data(
@@ -652,6 +656,36 @@ impl RpcServer for RpcServerImpl {
             .await
             .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))?;
         Ok(rollouts)
+    }
+
+    async fn get_rollout_estimate(&self, target: usize) -> Result<Vec<(u32, String)>, ErrorObjectOwned> {
+        let rollouts = self
+            .get_rollout(target)
+            .await?;
+        let mut spaceouts = Vec::with_capacity(rollouts.len());
+        for (priority, spacehash) in rollouts {
+            let outpoint = self.get_space_owner(&hex::encode(spacehash.as_slice())).await?;
+
+            if let Some(outpoint) = outpoint {
+                if let Some(spaceout) = self.get_spaceout(outpoint).await? {
+                    spaceouts.push((priority, FullSpaceOut { outpoint, spaceout }));
+                }
+            }
+        }
+        let data: Vec<_> = spaceouts
+            .into_iter()
+            .map(|(priority, spaceout)| {
+                let space = spaceout.spaceout.space.unwrap();
+                (
+                    match space.covenant {
+                        Covenant::Bid { .. } => priority,
+                        _ => 0,
+                    },
+                    space.name.to_string(),
+                )
+            })
+            .collect();
+        Ok(data)
     }
 
     async fn get_block_data(

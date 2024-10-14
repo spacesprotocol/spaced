@@ -13,7 +13,6 @@ use protocol::{
     hasher::{KeyHasher, SpaceHash},
     opcodes::OP_SETALL,
     sname::{NameLike, SName},
-    Covenant, FullSpaceOut,
 };
 use serde::{Deserialize, Serialize};
 use spaced::{
@@ -384,36 +383,8 @@ async fn handle_commands(
         Commands::GetRolloutEstimate {
             target_interval: target,
         } => {
-            let hashes = cli.client.get_rollout(target).await?;
-            let mut spaceouts = Vec::with_capacity(hashes.len());
-            for (priority, spacehash) in hashes {
-                let outpoint = cli
-                    .client
-                    .get_space_owner(&hex::encode(spacehash.as_slice()))
-                    .await?;
-
-                if let Some(outpoint) = outpoint {
-                    if let Some(spaceout) = cli.client.get_spaceout(outpoint).await? {
-                        spaceouts.push((priority, FullSpaceOut { outpoint, spaceout }));
-                    }
-                }
-            }
-
-            let data: Vec<_> = spaceouts
-                .into_iter()
-                .map(|(priority, spaceout)| {
-                    let space = spaceout.spaceout.space.unwrap();
-                    (
-                        space.name.to_string(),
-                        match space.covenant {
-                            Covenant::Bid { .. } => priority,
-                            _ => 0,
-                        },
-                    )
-                })
-                .collect();
-
-            println!("{}", serde_json::to_string_pretty(&data)?);
+            let response = cli.client.get_rollout_estimate(target).await?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
         }
         Commands::EstimateBid { target } => {
             let response = cli.client.estimate_bid(target).await?;
