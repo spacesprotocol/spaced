@@ -1,0 +1,60 @@
+name: Release macOs (x86_64)
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  release:
+    runs-on: macos-13
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Dynamically create a tag from the pushed version
+      - name: Get the tag name
+        id: get_tag
+        run: | 
+          echo "TAG=${GITHUB_REF##*/}" >> $GITHUB_ENV
+
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Build release binary
+        run: cargo build --release
+
+      # Perhaps we can ignore tests, as they are run by the CI workflow
+      # - name: Run tests
+      #   run: cargo test --release
+      
+      - name: Get OS and architecture
+        run: |
+          echo "os=$(uname -s | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+          echo "arch=$(uname -m)" >> $GITHUB_ENV
+
+      - name: Create release archive
+        run: |
+          mkdir -p release
+          ARCH="${{ env.arch }}"
+          OS="${{ env.os }}"
+          cp target/release/spaced release/spaced-${{ env.TAG }}-${OS}-${ARCH}
+          cp target/release/space-cli release/space-cli-${{ env.TAG }}-${OS}-${ARCH}
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}  # Dynamically use the pushed tag
+          name: Release ${{ env.TAG }}  # Use the tag for the release name
+          body: |
+            Automated release of version ${{ env.TAG }}.
+          draft: false
+          prerelease: false
+          files: | 
+            release/spaced-${{ env.TAG }}-${{ env.os }}-${{ env.arch }}
+            release/space-cli-${{ env.TAG }}-${{ env.os }}-${{ env.arch }}
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
