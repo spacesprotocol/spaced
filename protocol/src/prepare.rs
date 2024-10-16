@@ -4,13 +4,12 @@ use bitcoin::{
     absolute::LockTime,
     opcodes::all::OP_RETURN,
     secp256k1::{schnorr, schnorr::Signature},
-    transaction::Version,
-    Amount, OutPoint, Transaction, TxIn, TxOut, Txid,
+    Amount, OutPoint, Transaction, TxOut,
 };
 
 use crate::{
     errors::Result,
-    hasher::{KeyHasher, SpaceHash},
+    hasher::{KeyHasher, SpaceKey},
     script::{ScriptMachine, ScriptResult},
     SpaceOut,
 };
@@ -23,32 +22,13 @@ pub struct BidPsbt {
     pub(crate) burn_amount: Amount,
 }
 
-/// A subset of a Bitcoin transaction relevant to the Spaces protocol
-/// along with all the data necessary to validate it.
-pub struct PreparedTransaction {
-    pub version: Version,
-
-    pub lock_time: LockTime,
-
-    /// The Bitcoin transaction id
-    pub txid: Txid,
-
-    /// List of transaction inputs
-    pub inputs: Vec<FullTxIn>,
-
-    /// List of transaction outputs
-    pub outputs: Vec<TxOut>,
-
+pub struct TxContext {
+    pub inputs: Vec<InputContext>,
     pub auctioned_output: Option<AuctionedOutput>,
 }
 
-pub enum FullTxIn {
-    FullSpaceIn(FullSpaceIn),
-    CoinIn(TxIn),
-}
-
-pub struct FullSpaceIn {
-    pub input: TxIn,
+pub struct InputContext {
+    pub n: usize,
     pub sstxo: SSTXO,
     pub script: Option<ScriptResult<ScriptMachine>>,
 }
@@ -69,15 +49,15 @@ pub struct AuctionedOutput {
 pub trait DataSource {
     fn get_space_outpoint(
         &mut self,
-        space_hash: &SpaceHash,
-    ) -> crate::errors::Result<Option<OutPoint>>;
+        space_hash: &SpaceKey,
+    ) -> Result<Option<OutPoint>>;
 
-    fn get_spaceout(&mut self, outpoint: &OutPoint) -> crate::errors::Result<Option<SpaceOut>>;
+    fn get_spaceout(&mut self, outpoint: &OutPoint) -> Result<Option<SpaceOut>>;
 }
 
-impl PreparedTransaction {
+impl TxContext {
     #[inline(always)]
-    pub fn spending_space_in<T: DataSource>(src: &mut T, tx: &Transaction) -> Result<bool> {
+    pub fn spending_spaces<T: DataSource>(src: &mut T, tx: &Transaction) -> Result<bool> {
         for input in tx.input.iter() {
             if src.get_spaceout(&input.previous_output)?.is_some() {
                 return Ok(true);
@@ -86,40 +66,22 @@ impl PreparedTransaction {
         Ok(false)
     }
 
-    /// Creates a [PreparedTransaction] from a Bitcoin [Transaction], loading all necessary data
+    /// Creates a [TxContext] from a Bitcoin [Transaction], loading all necessary data
     /// for validation from the provided data source `src`. This function executes the Space script
     /// and loads any additional context required for further validation.
-    ///
-    /// Key behaviors and assumptions:
-    ///
-    /// 1. OP_RETURN Priority:
-    ///    - The OP_RETURN at index 0 is assumed to carry the bid PSBT.
-    ///    - This PSBT is consumed by either an input spending a Space UTXO or an OP_OPEN revealed
-    ///      in the input witness. If both are present in the same input, the spend takes priority.
-    ///
-    /// 2. Multiple Space Scripts:
-    ///    - If Space scripts are revealed in multiple inputs, they are executed in input order.
-    ///    - Execution stops at the first error encountered in a script but has no effect on other
-    ///      scripts in the transaction.
     ///
     /// Returns `Some(PreparedTransaction)` if the transaction is relevant to the Spaces protocol.
     /// Returns `None` if the transaction is not relevant.
     pub fn from_tx<T: DataSource, H: KeyHasher>(
         src: &mut T,
-        tx: Transaction,
-    ) -> Result<Option<PreparedTransaction>> {
-        if !Self::spending_space_in(src, &tx)? {
-            if tx.is_magic_output() {
-                return Ok(Some(PreparedTransaction {
-                    version: tx.version,
-                    lock_time: tx.lock_time,
-                    txid: tx.compute_txid(),
-                    inputs: tx
-                        .input
-                        .into_iter()
-                        .map(|input| FullTxIn::CoinIn(input))
-                        .collect(),
-                    outputs: tx.output,
+        tx: &Transaction,
+    ) -> Result<Option<TxContext>> {
+        if !Self::spending_spaces(src, &tx)? {
+            if is_magic_lock_time(&tx.lock_time)
+                && tx.output.iter().any(|out| out.is_magic_output())
+            {
+                return Ok(Some(TxContext {
+                    inputs: vec![],
                     // even if such an output exists, it can be ignored
                     // as there's no spends of existing space outputs
                     auctioned_output: None,
@@ -137,40 +99,30 @@ impl PreparedTransaction {
             }),
         };
 
-        let txid = tx.compute_txid();
-        for input in tx.input.into_iter() {
+        for (n, input) in tx.input.iter().enumerate() {
             let spaceout = match src.get_spaceout(&input.previous_output)? {
-                None => {
-                    inputs.push(FullTxIn::CoinIn(input));
-                    continue;
-                }
+                None => continue,
                 Some(out) => out,
             };
-
             let sstxo = SSTXO {
                 previous_output: spaceout,
             };
-
-            let mut spacein = FullSpaceIn {
-                input,
+            let mut spacein = InputContext {
+                n,
                 sstxo,
                 script: None,
             };
 
             // Run any space scripts
-            if let Some(script) = spacein.input.witness.tapscript() {
-                spacein.script = Some(ScriptMachine::execute::<T, H>(src, script)?);
+            if let Some(script) = input.witness.tapscript() {
+                spacein.script = Some(ScriptMachine::execute::<T, H>(n, src, script)?);
             }
-            inputs.push(FullTxIn::FullSpaceIn(spacein))
+            inputs.push(spacein)
         }
 
-        Ok(Some(PreparedTransaction {
-            version: tx.version,
-            lock_time: tx.lock_time,
-            txid,
+        Ok(Some(TxContext {
             inputs,
-            outputs: tx.output,
-            auctioned_output: auctioned_output,
+            auctioned_output,
         }))
     }
 
@@ -228,15 +180,6 @@ pub struct CPsbt {
 
 pub trait TrackableOutput {
     fn is_magic_output(&self) -> bool;
-}
-
-impl TrackableOutput for Transaction {
-    fn is_magic_output(&self) -> bool {
-        if is_magic_lock_time(&self.lock_time) {
-            return self.output.iter().any(|out| out.is_magic_output());
-        }
-        false
-    }
 }
 
 pub fn is_magic_lock_time(lock_time: &LockTime) -> bool {

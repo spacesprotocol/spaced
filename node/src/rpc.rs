@@ -23,7 +23,7 @@ use protocol::{
         OutPoint,
     },
     constants::ChainAnchor,
-    hasher::{BaseHash, SpaceHash},
+    hasher::{BaseHash, SpaceKey},
     prepare::DataSource,
     FullSpaceOut, SpaceOut,
 };
@@ -40,7 +40,7 @@ use wallet::{
 
 use crate::{
     config::ExtendedNetwork,
-    node::ValidatedBlock,
+    node::BlockMeta,
     source::BitcoinRpc,
     store::{ChainState, LiveSnapshot},
     wallets::{AddressKind, JointBalance, RpcWallet, TxResponse, WalletCommand, WalletResponse},
@@ -59,7 +59,7 @@ pub enum ChainStateCommand {
         resp: Responder<anyhow::Result<ChainAnchor>>,
     },
     GetSpace {
-        hash: SpaceHash,
+        hash: SpaceKey,
         resp: Responder<anyhow::Result<Option<FullSpaceOut>>>,
     },
 
@@ -68,12 +68,12 @@ pub enum ChainStateCommand {
         resp: Responder<anyhow::Result<Option<SpaceOut>>>,
     },
     GetSpaceOutpoint {
-        hash: SpaceHash,
+        hash: SpaceKey,
         resp: Responder<anyhow::Result<Option<OutPoint>>>,
     },
-    GetBlockData {
+    GetBlockMeta {
         block_hash: BlockHash,
-        resp: Responder<anyhow::Result<Option<ValidatedBlock>>>,
+        resp: Responder<anyhow::Result<Option<BlockMeta>>>,
     },
     EstimateBid {
         target: usize,
@@ -81,7 +81,7 @@ pub enum ChainStateCommand {
     },
     GetRollout {
         target: usize,
-        resp: Responder<anyhow::Result<Vec<(u32, SpaceHash)>>>,
+        resp: Responder<anyhow::Result<Vec<(u32, SpaceKey)>>>,
     },
 }
 
@@ -109,13 +109,13 @@ pub trait Rpc {
     async fn estimate_bid(&self, target: usize) -> Result<u64, ErrorObjectOwned>;
 
     #[method(name = "getrollout")]
-    async fn get_rollout(&self, target: usize) -> Result<Vec<(u32, SpaceHash)>, ErrorObjectOwned>;
+    async fn get_rollout(&self, target: usize) -> Result<Vec<(u32, SpaceKey)>, ErrorObjectOwned>;
 
-    #[method(name = "getblockdata")]
-    async fn get_block_data(
+    #[method(name = "getblockmeta")]
+    async fn get_block_meta(
         &self,
         block_hash: BlockHash,
-    ) -> Result<Option<ValidatedBlock>, ErrorObjectOwned>;
+    ) -> Result<Option<BlockMeta>, ErrorObjectOwned>;
 
     #[method(name = "walletload")]
     async fn wallet_load(&self, name: &str) -> Result<(), ErrorObjectOwned>;
@@ -645,7 +645,7 @@ impl RpcServer for RpcServerImpl {
         Ok(info)
     }
 
-    async fn get_rollout(&self, target: usize) -> Result<Vec<(u32, SpaceHash)>, ErrorObjectOwned> {
+    async fn get_rollout(&self, target: usize) -> Result<Vec<(u32, SpaceKey)>, ErrorObjectOwned> {
         let rollouts = self
             .store
             .get_rollout(target)
@@ -654,13 +654,13 @@ impl RpcServer for RpcServerImpl {
         Ok(rollouts)
     }
 
-    async fn get_block_data(
+    async fn get_block_meta(
         &self,
         block_hash: BlockHash,
-    ) -> Result<Option<ValidatedBlock>, ErrorObjectOwned> {
+    ) -> Result<Option<BlockMeta>, ErrorObjectOwned> {
         let data = self
             .store
-            .get_block_data(block_hash)
+            .get_block_meta(block_hash)
             .await
             .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))?;
 
@@ -822,7 +822,7 @@ impl AsyncChainState {
                     .context("could not fetch spaceout");
                 let _ = resp.send(result);
             }
-            ChainStateCommand::GetBlockData { block_hash, resp } => match block_index {
+            ChainStateCommand::GetBlockMeta { block_hash, resp } => match block_index {
                 None => {
                     let _ = resp.send(Err(anyhow!("block index must be enabled")));
                 }
@@ -874,7 +874,7 @@ impl AsyncChainState {
         resp_rx.await?
     }
 
-    pub async fn get_rollout(&self, target: usize) -> anyhow::Result<Vec<(u32, SpaceHash)>> {
+    pub async fn get_rollout(&self, target: usize) -> anyhow::Result<Vec<(u32, SpaceKey)>> {
         let (resp, resp_rx) = oneshot::channel();
         self.sender
             .send(ChainStateCommand::GetRollout { target, resp })
@@ -882,7 +882,7 @@ impl AsyncChainState {
         resp_rx.await?
     }
 
-    pub async fn get_space(&self, hash: SpaceHash) -> anyhow::Result<Option<FullSpaceOut>> {
+    pub async fn get_space(&self, hash: SpaceKey) -> anyhow::Result<Option<FullSpaceOut>> {
         let (resp, resp_rx) = oneshot::channel();
         self.sender
             .send(ChainStateCommand::GetSpace { hash, resp })
@@ -890,7 +890,7 @@ impl AsyncChainState {
         resp_rx.await?
     }
 
-    pub async fn get_space_outpoint(&self, hash: SpaceHash) -> anyhow::Result<Option<OutPoint>> {
+    pub async fn get_space_outpoint(&self, hash: SpaceKey) -> anyhow::Result<Option<OutPoint>> {
         let (resp, resp_rx) = oneshot::channel();
         self.sender
             .send(ChainStateCommand::GetSpaceOutpoint { hash, resp })
@@ -912,19 +912,16 @@ impl AsyncChainState {
         resp_rx.await?
     }
 
-    pub async fn get_block_data(
-        &self,
-        block_hash: BlockHash,
-    ) -> anyhow::Result<Option<ValidatedBlock>> {
+    pub async fn get_block_meta(&self, block_hash: BlockHash) -> anyhow::Result<Option<BlockMeta>> {
         let (resp, resp_rx) = oneshot::channel();
         self.sender
-            .send(ChainStateCommand::GetBlockData { block_hash, resp })
+            .send(ChainStateCommand::GetBlockMeta { block_hash, resp })
             .await?;
         resp_rx.await?
     }
 }
 
-fn space_hash_from_string(space_hash: &str) -> Result<SpaceHash, ErrorObjectOwned> {
+fn space_hash_from_string(space_hash: &str) -> Result<SpaceKey, ErrorObjectOwned> {
     let mut hash = [0u8; 32];
     hex::decode_to_slice(space_hash, &mut hash).map_err(|_| {
         ErrorObjectOwned::owned(
@@ -933,7 +930,7 @@ fn space_hash_from_string(space_hash: &str) -> Result<SpaceHash, ErrorObjectOwne
             None::<String>,
         )
     })?;
-    SpaceHash::from_raw(hash).map_err(|_| {
+    SpaceKey::from_raw(hash).map_err(|_| {
         ErrorObjectOwned::owned(
             -1,
             "expected a 32-byte hex encoded space hash",

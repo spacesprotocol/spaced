@@ -15,12 +15,12 @@ pub trait KeyHasher {
 #[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
-pub struct SpaceHash(Hash);
+pub struct SpaceKey(Hash);
 
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
-pub struct BidHash(Hash);
+pub struct BidKey(Hash);
 
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -38,23 +38,23 @@ impl BaseHash {
 #[derive(Copy, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
-pub struct OutpointHash(Hash);
+pub struct OutpointKey(Hash);
 
 pub trait KeyHash {}
-impl KeyHash for SpaceHash {}
-impl KeyHash for OutpointHash {}
-impl KeyHash for BidHash {}
+impl KeyHash for SpaceKey {}
+impl KeyHash for OutpointKey {}
+impl KeyHash for BidKey {}
 impl KeyHash for BaseHash {}
 
-impl From<Hash> for SpaceHash {
+impl From<Hash> for SpaceKey {
     fn from(mut value: Hash) -> Self {
         value[0] &= 0b0111_1111;
         value[31] &= 0b1111_1110;
-        SpaceHash(value)
+        SpaceKey(value)
     }
 }
 
-impl SpaceHash {
+impl SpaceKey {
     #[inline(always)]
     pub fn from_raw(value: Hash) -> crate::errors::Result<Self> {
         if (value[0] & 0b1000_0000) == 0 && (value[31] & 0b0000_0001) == 0 {
@@ -75,20 +75,20 @@ impl SpaceHash {
     }
 }
 
-impl From<SpaceHash> for Hash {
-    fn from(value: SpaceHash) -> Self {
+impl From<SpaceKey> for Hash {
+    fn from(value: SpaceKey) -> Self {
         value.0
     }
 }
 
-impl From<BidHash> for Hash {
-    fn from(value: BidHash) -> Self {
+impl From<BidKey> for Hash {
+    fn from(value: BidKey) -> Self {
         value.0
     }
 }
 
-impl From<OutpointHash> for Hash {
-    fn from(value: OutpointHash) -> Self {
+impl From<OutpointKey> for Hash {
+    fn from(value: OutpointKey) -> Self {
         value.0
     }
 }
@@ -105,7 +105,7 @@ impl From<BaseHash> for Hash {
     }
 }
 
-impl OutpointHash {
+impl OutpointKey {
     pub fn from_outpoint<H: KeyHasher>(value: OutPoint) -> Self {
         let mut buffer = [0u8; 32 + 4];
         buffer[0..32].copy_from_slice(value.txid.as_ref());
@@ -115,7 +115,7 @@ impl OutpointHash {
     }
 }
 
-impl BidHash {
+impl BidKey {
     pub fn from_bid(bid_value: Amount, mut base_hash: Hash) -> Self {
         let priority = core::cmp::min(bid_value.to_sat(), (1 << 31) - 1) as u32;
         let priority_bytes = priority.to_be_bytes();
@@ -123,7 +123,7 @@ impl BidHash {
 
         // first bit is always 1
         base_hash[0] |= 0b1000_0000;
-        BidHash(base_hash)
+        BidKey(base_hash)
     }
 
     pub fn priority(&self) -> u32 {
@@ -152,20 +152,20 @@ impl BidHash {
     }
 }
 
-impl From<Hash> for BidHash {
+impl From<Hash> for BidKey {
     fn from(mut value: Hash) -> Self {
         // First bit is always 0 and last bit is always 1
         value[0] &= 0b0111_1111;
         value[31] |= 0b0000_0001;
-        BidHash(value)
+        BidKey(value)
     }
 }
 
-impl From<Hash> for OutpointHash {
+impl From<Hash> for OutpointKey {
     fn from(mut value: Hash) -> Self {
         // First bit is always 0 and last bit is always 1
         value[0] &= 0b0111_1111;
         value[31] |= 0b0000_0001;
-        OutpointHash(value)
+        OutpointKey(value)
     }
 }

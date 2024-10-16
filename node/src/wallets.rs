@@ -7,7 +7,7 @@ use log::{info, warn};
 use protocol::{
     bitcoin::Txid,
     constants::ChainAnchor,
-    hasher::{KeyHasher, SpaceHash},
+    hasher::{KeyHasher, SpaceKey},
     prepare::DataSource,
     sname::{NameLike, SName},
     FullSpaceOut,
@@ -20,7 +20,11 @@ use tokio::{
 };
 use wallet::{
     address::SpaceAddress,
-    bdk_wallet::{bitcoin::psbt::Input, KeychainKind, LocalOutput, Utxo, WeightedUtxo},
+    bdk_wallet::{
+        bitcoin::psbt::Input,
+        chain::{local_chain::CheckPoint, BlockId},
+        KeychainKind, LocalOutput, Utxo, WeightedUtxo,
+    },
     bitcoin,
     bitcoin::{Address, Amount, FeeRate, Sequence},
     builder::{
@@ -28,8 +32,7 @@ use wallet::{
     },
     DoubleUtxo, SpacesWallet, WalletInfo,
 };
-use wallet::bdk_wallet::chain::BlockId;
-use wallet::bdk_wallet::chain::local_chain::CheckPoint;
+
 use crate::{
     config::ExtendedNetwork,
     node::BlockSource,
@@ -354,7 +357,7 @@ impl RpcWallet {
                                 wallet.spaces.insert_checkpoint(cp.block_id())?;
                                 cp
                             }
-                            Some(cp) => cp
+                            Some(cp) => cp,
                         };
 
                         wallet_tip.height = restore_point.block_id().height;
@@ -429,7 +432,7 @@ impl RpcWallet {
                     coinouts.push(output);
                 }
                 Some(spaceout) => spaceouts.push(FullSpaceOut {
-                    outpoint: output.outpoint,
+                    txid: output.outpoint.txid,
                     spaceout,
                 }),
             }
@@ -462,7 +465,7 @@ impl RpcWallet {
             }
         };
 
-        let spacehash = SpaceHash::from(Sha256::hash(sname.to_bytes()));
+        let spacehash = SpaceKey::from(Sha256::hash(sname.to_bytes()));
         let script_pubkey = match store.get_space_info(&spacehash)? {
             None => return Ok(None),
             Some(fullspaceout) => fullspaceout.spaceout.script_pubkey,
@@ -528,7 +531,7 @@ impl RpcWallet {
                         Some(r) => r,
                     };
                     for space in spaces {
-                        let spacehash = SpaceHash::from(Sha256::hash(space.to_bytes()));
+                        let spacehash = SpaceKey::from(Sha256::hash(space.to_bytes()));
                         match store.get_space_info(&spacehash)? {
                             None => return Err(anyhow!("sendspaces: you don't own `{}`", space)),
                             Some(full)
@@ -554,7 +557,7 @@ impl RpcWallet {
                     let name = SName::from_str(&params.name)?;
                     if !tx.force {
                         // Warn if already exists
-                        let spacehash = SpaceHash::from(Sha256::hash(name.to_bytes()));
+                        let spacehash = SpaceKey::from(Sha256::hash(name.to_bytes()));
                         let spaceout = store.get_space_info(&spacehash)?;
                         if spaceout.is_some() {
                             return Err(anyhow!("open '{}': space already exists", params.name));
@@ -565,7 +568,7 @@ impl RpcWallet {
                 }
                 RpcWalletRequest::Bid(params) => {
                     let name = SName::from_str(&params.name)?;
-                    let spacehash = SpaceHash::from(Sha256::hash(name.to_bytes()));
+                    let spacehash = SpaceKey::from(Sha256::hash(name.to_bytes()));
                     let spaceout = store.get_space_info(&spacehash)?;
                     if spaceout.is_none() {
                         return Err(anyhow!("bid '{}': space does not exist", params.name));
@@ -574,7 +577,7 @@ impl RpcWallet {
                 }
                 RpcWalletRequest::Register(params) => {
                     let name = SName::from_str(&params.name)?;
-                    let spacehash = SpaceHash::from(Sha256::hash(name.to_bytes()));
+                    let spacehash = SpaceKey::from(Sha256::hash(name.to_bytes()));
                     let spaceout = store.get_space_info(&spacehash)?;
                     if spaceout.is_none() {
                         return Err(anyhow!("register '{}': space does not exist", params.name));
@@ -627,7 +630,7 @@ impl RpcWallet {
                     let mut spaces = Vec::new();
                     for space in params.context.iter() {
                         let name = SName::from_str(&space)?;
-                        let spacehash = SpaceHash::from(Sha256::hash(name.to_bytes()));
+                        let spacehash = SpaceKey::from(Sha256::hash(name.to_bytes()));
                         let spaceout = store.get_space_info(&spacehash)?;
                         if spaceout.is_none() {
                             return Err(anyhow!("execute on '{}': space does not exist", space));

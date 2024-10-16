@@ -1,5 +1,6 @@
 use bitcoin::{
     absolute::{Height, LockTime},
+    blockdata::transaction::Version,
     hashes::Hash,
     BlockHash, Sequence,
 };
@@ -35,7 +36,7 @@ pub const RENEWAL_INTERVAL: u32 = 144 * 365;
 
 /// The transaction version used in the carried bid PSBT.
 /// This must match for correct PSBT reconstruction.
-pub const BID_PSBT_TX_VERSION: i32 = 2;
+pub const BID_PSBT_TX_VERSION: Version = Version::TWO;
 
 /// The lock time for bid PSBTs.
 /// This must match for correct PSBT reconstruction.
