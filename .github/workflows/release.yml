@@ -1,4 +1,4 @@
-name: Release macOs (arm)
+name: Build binaries and create release
 
 on:
   push:
@@ -7,7 +7,10 @@ on:
 
 jobs:
   release:
-    runs-on: macos-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest, macos-13]  # Specify the runners you want to use
 
     steps:
       - name: Checkout repository
@@ -28,6 +31,7 @@ jobs:
       # Perhaps we can ignore tests, as they are run by the CI workflow
       # - name: Run tests
       #   run: cargo test --release
+      #
       
       - name: Get OS and architecture
         run: |
