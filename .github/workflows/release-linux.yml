@@ -50,7 +50,7 @@ jobs:
           tag_name: ${{ env.TAG }}  # Dynamically use the pushed tag
           name: Release ${{ env.TAG }}  # Use the tag for the release name
           body: |
-            Automated release of version ${{ env.TAG }}.
+            Spaces release of version ${{ env.TAG }}.
           draft: false
           prerelease: false
           files: | 
