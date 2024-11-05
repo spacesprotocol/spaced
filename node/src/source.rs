@@ -146,6 +146,11 @@ impl BitcoinRpc {
         self.make_request("getblockheader", params)
     }
 
+    pub fn get_raw_transaction(&self, hash: &Txid, verbose: bool) -> BitcoinRpcRequest {
+        let params = serde_json::json!([hash, verbose]);
+        self.make_request("getrawtransaction", params)
+    }
+
     pub fn get_block_hash(&self, height: u32) -> BitcoinRpcRequest {
         let params = serde_json::json!([height]);
 

@@ -25,6 +25,7 @@ use protocol::{
     constants::ChainAnchor,
     hasher::{BaseHash, SpaceKey},
     prepare::DataSource,
+    validate::TxChangeSet,
     FullSpaceOut, SpaceOut,
 };
 use serde::{Deserialize, Serialize};
@@ -71,6 +72,10 @@ pub enum ChainStateCommand {
         hash: SpaceKey,
         resp: Responder<anyhow::Result<Option<OutPoint>>>,
     },
+    GetTxMeta {
+        txid: Txid,
+        resp: Responder<anyhow::Result<Option<TxChangeSet>>>,
+    },
     GetBlockMeta {
         block_hash: BlockHash,
         resp: Responder<anyhow::Result<Option<BlockMeta>>>,
@@ -111,9 +116,14 @@ pub trait Rpc {
     #[method(name = "getrollout")]
     async fn get_rollout(&self, target: usize) -> Result<Vec<(u32, SpaceKey)>, ErrorObjectOwned>;
 
-    #[method(name = "getblock")]
-    async fn get_block(&self, block_hash: BlockHash)
-        -> Result<Option<BlockMeta>, ErrorObjectOwned>;
+    #[method(name = "getblockmeta")]
+    async fn get_block_meta(
+        &self,
+        block_hash: BlockHash,
+    ) -> Result<Option<BlockMeta>, ErrorObjectOwned>;
+
+    #[method(name = "gettxmeta")]
+    async fn get_tx_meta(&self, txid: Txid) -> Result<Option<TxChangeSet>, ErrorObjectOwned>;
 
     #[method(name = "walletload")]
     async fn wallet_load(&self, name: &str) -> Result<(), ErrorObjectOwned>;
@@ -652,16 +662,25 @@ impl RpcServer for RpcServerImpl {
         Ok(rollouts)
     }
 
-    async fn get_block(
+    async fn get_block_meta(
         &self,
         block_hash: BlockHash,
     ) -> Result<Option<BlockMeta>, ErrorObjectOwned> {
         let data = self
             .store
-            .get_block(block_hash)
+            .get_block_meta(block_hash)
             .await
             .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))?;
 
+        Ok(data)
+    }
+
+    async fn get_tx_meta(&self, txid: Txid) -> Result<Option<TxChangeSet>, ErrorObjectOwned> {
+        let data = self
+            .store
+            .get_tx_meta(txid)
+            .await
+            .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))?;
         Ok(data)
     }
 
@@ -794,6 +813,31 @@ impl AsyncChainState {
         Self { sender }
     }
 
+    async fn get_indexed_tx(
+        index: &mut Option<LiveSnapshot>,
+        txid: &Txid,
+        client: &reqwest::Client,
+        rpc: &BitcoinRpc,
+        chain_state: &mut LiveSnapshot,
+    ) -> Result<Option<TxChangeSet>, anyhow::Error> {
+        let info: serde_json::Value = rpc
+            .send_json(client, &rpc.get_raw_transaction(&txid, true))
+            .await
+            .map_err(|e| anyhow!("Could not retrieve tx ({})", e))?;
+
+        let block_hash = BlockHash::from_str(
+            info.get("blockhash")
+                .and_then(|t| t.as_str())
+                .ok_or_else(|| anyhow!("Could not retrieve block hash"))?,
+        )?;
+        let block = Self::get_indexed_block(index, &block_hash, client, rpc, chain_state).await?;
+
+        if let Some(block) = block {
+            return Ok(block.tx_meta.into_iter().find(|tx| &tx.txid == txid));
+        }
+        Ok(None)
+    }
+
     async fn get_indexed_block(
         index: &mut Option<LiveSnapshot>,
         block_hash: &BlockHash,
@@ -866,6 +910,10 @@ impl AsyncChainState {
                 let res =
                     Self::get_indexed_block(block_index, &block_hash, client, rpc, chain_state)
                         .await;
+                let _ = resp.send(res);
+            }
+            ChainStateCommand::GetTxMeta { txid, resp } => {
+                let res = Self::get_indexed_tx(block_index, &txid, client, rpc, chain_state).await;
                 let _ = resp.send(res);
             }
             ChainStateCommand::EstimateBid { target, resp } => {
@@ -947,10 +995,18 @@ impl AsyncChainState {
         resp_rx.await?
     }
 
-    pub async fn get_block(&self, block_hash: BlockHash) -> anyhow::Result<Option<BlockMeta>> {
+    pub async fn get_block_meta(&self, block_hash: BlockHash) -> anyhow::Result<Option<BlockMeta>> {
         let (resp, resp_rx) = oneshot::channel();
         self.sender
             .send(ChainStateCommand::GetBlockMeta { block_hash, resp })
+            .await?;
+        resp_rx.await?
+    }
+
+    pub async fn get_tx_meta(&self, txid: Txid) -> anyhow::Result<Option<TxChangeSet>> {
+        let (resp, resp_rx) = oneshot::channel();
+        self.sender
+            .send(ChainStateCommand::GetTxMeta { txid, resp })
             .await?;
         resp_rx.await?
     }

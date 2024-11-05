@@ -39,7 +39,7 @@ pub struct Node {
 /// relevant to the Spaces protocol
 #[derive(Clone, Serialize, Deserialize, Encode, Decode)]
 pub struct BlockMeta {
-    tx_meta: Vec<TxChangeSet>,
+    pub tx_meta: Vec<TxChangeSet>,
 }
 
 #[derive(Debug)]
