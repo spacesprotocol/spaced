@@ -98,11 +98,11 @@ impl Validator {
         Self {}
     }
 
-    pub fn process(&self, height: u32, tx: &Transaction, mut meta: TxContext) -> TxChangeSet {
+    pub fn process(&self, height: u32, tx: &Transaction, mut ctx: TxContext) -> TxChangeSet {
         // Auctioned outputs could technically be spent in the same transaction
         // making the bid psbt unusable. We need to clear any spent ones
         // before proceeding with further validation
-        Self::clear_auctioned_spent(tx, &mut meta);
+        Self::clear_auctioned_spent(tx, &mut ctx);
 
         let mut changeset = TxChangeSet {
             txid: tx.compute_txid(),
@@ -115,7 +115,7 @@ impl Validator {
         let mut space_data = BTreeMap::new();
         let mut reserve = false;
 
-        for fullspacein in meta.inputs.into_iter() {
+        for fullspacein in ctx.inputs.into_iter() {
             changeset.spends.push(SpaceIn {
                 n: fullspacein.n,
                 script_error: None,
@@ -125,7 +125,7 @@ impl Validator {
             self.process_spend(
                 height,
                 tx,
-                &mut meta.auctioned_output,
+                &mut ctx.auctioned_output,
                 fullspacein.n,
                 fullspacein.sstxo,
                 &mut changeset,
@@ -143,7 +143,7 @@ impl Validator {
                             self.process_open(
                                 height,
                                 open,
-                                &mut meta.auctioned_output,
+                                &mut ctx.auctioned_output,
                                 &mut changeset,
                             );
                         }

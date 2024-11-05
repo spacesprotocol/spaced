@@ -100,7 +100,7 @@ pub trait Rpc {
 
     #[method(name = "getspaceowner")]
     async fn get_space_owner(&self, space_hash: &str)
-        -> Result<Option<OutPoint>, ErrorObjectOwned>;
+                             -> Result<Option<OutPoint>, ErrorObjectOwned>;
 
     #[method(name = "getspaceout")]
     async fn get_spaceout(&self, outpoint: OutPoint) -> Result<Option<SpaceOut>, ErrorObjectOwned>;
@@ -111,8 +111,8 @@ pub trait Rpc {
     #[method(name = "getrollout")]
     async fn get_rollout(&self, target: usize) -> Result<Vec<(u32, SpaceKey)>, ErrorObjectOwned>;
 
-    #[method(name = "getblockmeta")]
-    async fn get_block_meta(
+    #[method(name = "getblock")]
+    async fn get_block(
         &self,
         block_hash: BlockHash,
     ) -> Result<Option<BlockMeta>, ErrorObjectOwned>;
@@ -156,11 +156,11 @@ pub trait Rpc {
 
     #[method(name = "walletlistspaces")]
     async fn wallet_list_spaces(&self, wallet: &str)
-        -> Result<Vec<FullSpaceOut>, ErrorObjectOwned>;
+                                -> Result<Vec<FullSpaceOut>, ErrorObjectOwned>;
 
     #[method(name = "walletlistunspent")]
     async fn wallet_list_unspent(&self, wallet: &str)
-        -> Result<Vec<LocalOutput>, ErrorObjectOwned>;
+                                 -> Result<Vec<LocalOutput>, ErrorObjectOwned>;
 
     #[method(name = "walletlistauctionoutputs")]
     async fn wallet_list_auction_outputs(
@@ -654,13 +654,13 @@ impl RpcServer for RpcServerImpl {
         Ok(rollouts)
     }
 
-    async fn get_block_meta(
+    async fn get_block(
         &self,
         block_hash: BlockHash,
     ) -> Result<Option<BlockMeta>, ErrorObjectOwned> {
         let data = self
             .store
-            .get_block_meta(block_hash)
+            .get_block(block_hash)
             .await
             .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))?;
 
@@ -796,7 +796,44 @@ impl AsyncChainState {
         Self { sender }
     }
 
+    async fn get_indexed_block(
+        index: &mut Option<LiveSnapshot>,
+        block_hash: &BlockHash,
+        client: &reqwest::Client,
+        rpc: &BitcoinRpc,
+        chain_state: &mut LiveSnapshot,
+    ) -> Result<Option<BlockMeta>, anyhow::Error> {
+        let index = index.as_mut()
+            .ok_or_else(|| anyhow!("block index must be enabled"))?;
+        let hash = BaseHash::from_slice(block_hash.as_ref());
+        let block: Option<BlockMeta> = index.get(hash)
+            .context("Could not fetch block from index")?;
+
+        if let Some(block_set) = block {
+            return Ok(Some(block_set));
+        }
+
+        let info: serde_json::Value = rpc.send_json(client, &rpc.
+            get_block_header(block_hash)).await
+            .map_err(|e| anyhow!("Could not retrieve block ({})", e))?;
+
+        let height = info.get("height").and_then(|t| t.as_u64())
+            .ok_or_else(|| anyhow!("Could not retrieve block height"))?;
+
+        let tip = chain_state.tip.read().expect("read meta").clone();
+        if height > tip.height as u64 {
+            return Err(anyhow!(
+            "Spaces is syncing at height {}, requested block height {}",
+            tip.height,
+            height
+        ));
+        }
+        Err(anyhow!("Could not retrieve block"))
+    }
+
     pub async fn handle_command(
+        client: &reqwest::Client,
+        rpc: &BitcoinRpc,
         chain_state: &mut LiveSnapshot,
         block_index: &mut Option<LiveSnapshot>,
         cmd: ChainStateCommand,
@@ -822,19 +859,12 @@ impl AsyncChainState {
                     .context("could not fetch spaceout");
                 let _ = resp.send(result);
             }
-            ChainStateCommand::GetBlockMeta { block_hash, resp } => match block_index {
-                None => {
-                    let _ = resp.send(Err(anyhow!("block index must be enabled")));
-                }
-                Some(index) => {
-                    let hash = BaseHash::from_slice(block_hash.as_ref());
-                    let _ = resp.send(
-                        index
-                            .get(hash)
-                            .context("Could not fetch blockdata from index"),
-                    );
-                }
-            },
+            ChainStateCommand::GetBlockMeta { block_hash, resp } => {
+                let res = Self::get_indexed_block(
+                    block_index, &block_hash, client, rpc, chain_state
+                ).await;
+                let _ = resp.send(res);
+            }
             ChainStateCommand::EstimateBid { target, resp } => {
                 let estimate = chain_state.estimate_bid(target);
                 _ = resp.send(estimate);
@@ -847,6 +877,8 @@ impl AsyncChainState {
     }
 
     pub async fn handler(
+        client: &reqwest::Client,
+        rpc: BitcoinRpc,
         mut chain_state: LiveSnapshot,
         mut block_index: Option<LiveSnapshot>,
         mut rx: mpsc::Receiver<ChainStateCommand>,
@@ -858,7 +890,7 @@ impl AsyncChainState {
                      break;
                 }
                 Some(cmd) = rx.recv() => {
-                    Self::handle_command(&mut chain_state, &mut block_index, cmd).await;
+                    Self::handle_command(client, &rpc, &mut chain_state, &mut block_index, cmd).await;
                 }
             }
         }
@@ -912,7 +944,7 @@ impl AsyncChainState {
         resp_rx.await?
     }
 
-    pub async fn get_block_meta(&self, block_hash: BlockHash) -> anyhow::Result<Option<BlockMeta>> {
+    pub async fn get_block(&self, block_hash: BlockHash) -> anyhow::Result<Option<BlockMeta>> {
         let (resp, resp_rx) = oneshot::channel();
         self.sender
             .send(ChainStateCommand::GetBlockMeta { block_hash, resp })
