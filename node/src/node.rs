@@ -11,7 +11,7 @@ use protocol::{
     hasher::{BidKey, KeyHasher, OutpointKey, SpaceKey},
     prepare::TxContext,
     sname::NameLike,
-    validate::{UpdateKind, TxChangeSet, Validator},
+    validate::{TxChangeSet, UpdateKind, Validator},
     Covenant, FullSpaceOut, RevokeReason, SpaceOut,
 };
 use serde::{Deserialize, Serialize};
@@ -232,13 +232,19 @@ impl Node {
                             .to_bytes(),
                     );
 
-                    let (bid_value, previous_bid) =
-                        unwrap_bid_value(&update.output.spaceout);
+                    let (bid_value, previous_bid) = unwrap_bid_value(&update.output.spaceout);
 
                     let bid_hash = BidKey::from_bid(bid_value, base_hash);
                     let space_key = SpaceKey::from(base_hash);
 
-                    match update.output.spaceout.space.as_ref().expect("space").covenant {
+                    match update
+                        .output
+                        .spaceout
+                        .space
+                        .as_ref()
+                        .expect("space")
+                        .covenant
+                    {
                         Covenant::Bid { claim_height, .. } => {
                             if claim_height.is_none() {
                                 let prev_bid_hash = BidKey::from_bid(previous_bid, base_hash);

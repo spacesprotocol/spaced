@@ -173,7 +173,9 @@ impl Args {
         let block_index = if args.block_index {
             let block_db_path = data_dir.join("block_index.sdb");
             if !initial_sync && !block_db_path.exists() {
-                return Err(anyhow::anyhow!("Block index must be enabled from the initial sync."))
+                return Err(anyhow::anyhow!(
+                    "Block index must be enabled from the initial sync."
+                ));
             }
             let block_store = Store::open(block_db_path)?;
             let index = LiveStore {
@@ -184,7 +186,9 @@ impl Args {
                 let tip_1 = index.state.tip.read().expect("index");
                 let tip_2 = chain.state.tip.read().expect("tip");
                 if tip_1.height != tip_2.height || tip_1.hash != tip_2.hash {
-                    return Err(anyhow::anyhow!("Protocol and block index states don't match."))
+                    return Err(anyhow::anyhow!(
+                        "Protocol and block index states don't match."
+                    ));
                 }
             }
             Some(index)

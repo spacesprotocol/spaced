@@ -100,7 +100,7 @@ pub trait Rpc {
 
     #[method(name = "getspaceowner")]
     async fn get_space_owner(&self, space_hash: &str)
-                             -> Result<Option<OutPoint>, ErrorObjectOwned>;
+        -> Result<Option<OutPoint>, ErrorObjectOwned>;
 
     #[method(name = "getspaceout")]
     async fn get_spaceout(&self, outpoint: OutPoint) -> Result<Option<SpaceOut>, ErrorObjectOwned>;
@@ -112,10 +112,8 @@ pub trait Rpc {
     async fn get_rollout(&self, target: usize) -> Result<Vec<(u32, SpaceKey)>, ErrorObjectOwned>;
 
     #[method(name = "getblock")]
-    async fn get_block(
-        &self,
-        block_hash: BlockHash,
-    ) -> Result<Option<BlockMeta>, ErrorObjectOwned>;
+    async fn get_block(&self, block_hash: BlockHash)
+        -> Result<Option<BlockMeta>, ErrorObjectOwned>;
 
     #[method(name = "walletload")]
     async fn wallet_load(&self, name: &str) -> Result<(), ErrorObjectOwned>;
@@ -156,11 +154,11 @@ pub trait Rpc {
 
     #[method(name = "walletlistspaces")]
     async fn wallet_list_spaces(&self, wallet: &str)
-                                -> Result<Vec<FullSpaceOut>, ErrorObjectOwned>;
+        -> Result<Vec<FullSpaceOut>, ErrorObjectOwned>;
 
     #[method(name = "walletlistunspent")]
     async fn wallet_list_unspent(&self, wallet: &str)
-                                 -> Result<Vec<LocalOutput>, ErrorObjectOwned>;
+        -> Result<Vec<LocalOutput>, ErrorObjectOwned>;
 
     #[method(name = "walletlistauctionoutputs")]
     async fn wallet_list_auction_outputs(
@@ -803,30 +801,35 @@ impl AsyncChainState {
         rpc: &BitcoinRpc,
         chain_state: &mut LiveSnapshot,
     ) -> Result<Option<BlockMeta>, anyhow::Error> {
-        let index = index.as_mut()
+        let index = index
+            .as_mut()
             .ok_or_else(|| anyhow!("block index must be enabled"))?;
         let hash = BaseHash::from_slice(block_hash.as_ref());
-        let block: Option<BlockMeta> = index.get(hash)
+        let block: Option<BlockMeta> = index
+            .get(hash)
             .context("Could not fetch block from index")?;
 
         if let Some(block_set) = block {
             return Ok(Some(block_set));
         }
 
-        let info: serde_json::Value = rpc.send_json(client, &rpc.
-            get_block_header(block_hash)).await
+        let info: serde_json::Value = rpc
+            .send_json(client, &rpc.get_block_header(block_hash))
+            .await
             .map_err(|e| anyhow!("Could not retrieve block ({})", e))?;
 
-        let height = info.get("height").and_then(|t| t.as_u64())
+        let height = info
+            .get("height")
+            .and_then(|t| t.as_u64())
             .ok_or_else(|| anyhow!("Could not retrieve block height"))?;
 
         let tip = chain_state.tip.read().expect("read meta").clone();
         if height > tip.height as u64 {
             return Err(anyhow!(
-            "Spaces is syncing at height {}, requested block height {}",
-            tip.height,
-            height
-        ));
+                "Spaces is syncing at height {}, requested block height {}",
+                tip.height,
+                height
+            ));
         }
         Err(anyhow!("Could not retrieve block"))
     }
@@ -860,9 +863,9 @@ impl AsyncChainState {
                 let _ = resp.send(result);
             }
             ChainStateCommand::GetBlockMeta { block_hash, resp } => {
-                let res = Self::get_indexed_block(
-                    block_index, &block_hash, client, rpc, chain_state
-                ).await;
+                let res =
+                    Self::get_indexed_block(block_index, &block_hash, client, rpc, chain_state)
+                        .await;
                 let _ = resp.send(res);
             }
             ChainStateCommand::EstimateBid { target, resp } => {

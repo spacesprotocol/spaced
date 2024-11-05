@@ -141,7 +141,7 @@ impl BitcoinRpc {
         self.make_request("getblockcount", params)
     }
 
-    pub fn get_block_header(&self, hash : &BlockHash) -> BitcoinRpcRequest {
+    pub fn get_block_header(&self, hash: &BlockHash) -> BitcoinRpcRequest {
         let params = serde_json::json!([hash]);
         self.make_request("getblockheader", params)
     }

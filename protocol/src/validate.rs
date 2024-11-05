@@ -1,4 +1,5 @@
 use alloc::{collections::btree_map::BTreeMap, vec, vec::Vec};
+
 #[cfg(feature = "bincode")]
 use bincode::{Decode, Encode};
 use bitcoin::{Amount, OutPoint, Transaction, Txid};
@@ -7,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     constants::{AUCTION_DURATION, AUCTION_EXTENSION_ON_BID, RENEWAL_INTERVAL, ROLLOUT_BATCH_SIZE},
-    prepare::{is_magic_lock_time, AuctionedOutput, TxContext, TrackableOutput, SSTXO},
+    prepare::{is_magic_lock_time, AuctionedOutput, TrackableOutput, TxContext, SSTXO},
     script::{OpOpenContext, ScriptError, SpaceKind},
     sname::SName,
     BidPsbtReason, Covenant, FullSpaceOut, RejectReason, RevokeReason, Space, SpaceOut,
@@ -384,7 +385,7 @@ impl Validator {
             return;
         }
 
-        changeset.updates.push(UpdateOut{
+        changeset.updates.push(UpdateOut {
             kind: UpdateKind::Bid,
             output: fullspaceout,
         });

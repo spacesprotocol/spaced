@@ -47,10 +47,7 @@ pub struct AuctionedOutput {
 }
 
 pub trait DataSource {
-    fn get_space_outpoint(
-        &mut self,
-        space_hash: &SpaceKey,
-    ) -> Result<Option<OutPoint>>;
+    fn get_space_outpoint(&mut self, space_hash: &SpaceKey) -> Result<Option<OutPoint>>;
 
     fn get_spaceout(&mut self, outpoint: &OutPoint) -> Result<Option<SpaceOut>>;
 }
