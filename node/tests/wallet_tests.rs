@@ -13,13 +13,13 @@ async fn setup() -> anyhow::Result<TestRig> {
 
 async fn it_should_create_and_fund_wallet(rig: &TestRig) -> anyhow::Result<()> {
     let name = "example";
-    rig.spaced.client.wallet_create(name).await?;
+    rig.spaced.client.wallet_create(name.to_string()).await?;
 
     // get an address from the wallet to fund it
     let addr = Address::from_str(
         &rig.spaced
             .client
-            .wallet_get_new_address(name, AddressKind::Coin)
+            .wallet_get_new_address(name.to_string(), AddressKind::Coin)
             .await?,
     )?
     .assume_checked();
@@ -30,7 +30,7 @@ async fn it_should_create_and_fund_wallet(rig: &TestRig) -> anyhow::Result<()> {
     // wait for the wallet to sync
     rig.wait_until_wallet_synced(name).await?;
 
-    let balance = rig.spaced.client.wallet_get_balance(name).await?;
+    let balance = rig.spaced.client.wallet_get_balance(name.to_string()).await?;
     assert_eq!(
         balance.confirmed.total,
         Amount::from_sat(1000_000),
@@ -54,7 +54,7 @@ async fn it_should_handle_simple_reorg(rig: &TestRig) -> anyhow::Result<()> {
     let name = "example";
     rig.wait_until_wallet_synced(&name).await?;
 
-    let balance = rig.spaced.client.wallet_get_balance(name).await?;
+    let balance = rig.spaced.client.wallet_get_balance(name.to_string()).await?;
     assert_eq!(
         balance.confirmed.total,
         Amount::from_sat(0),
@@ -65,7 +65,7 @@ async fn it_should_handle_simple_reorg(rig: &TestRig) -> anyhow::Result<()> {
     rig.mine_blocks(1, None).await?;
     rig.wait_until_wallet_synced(&name).await?;
 
-    let balance = rig.spaced.client.wallet_get_balance(name).await?;
+    let balance = rig.spaced.client.wallet_get_balance(name.to_string()).await?;
     assert_eq!(
         balance.confirmed.total,
         Amount::from_sat(1000_000),

@@ -273,7 +273,7 @@ impl SpaceCli {
         let result = self
             .client
             .wallet_send_request(
-                &self.wallet,
+                self.wallet.clone(),
                 RpcWalletTxBuilder {
                     auction_outputs,
                     requests: match req {
@@ -389,7 +389,7 @@ async fn handle_commands(
             for (priority, spacehash) in hashes {
                 let outpoint = cli
                     .client
-                    .get_space_owner(&hex::encode(spacehash.as_slice()))
+                    .get_space_owner(hex::encode(spacehash.as_slice()))
                     .await?;
 
                 if let Some(outpoint) = outpoint {
@@ -421,7 +421,7 @@ async fn handle_commands(
         }
         Commands::GetSpace { space } => {
             let space_hash = space_hash(&space).map_err(|e| ClientError::Custom(e.to_string()))?;
-            let response = cli.client.get_space(&space_hash).await?;
+            let response = cli.client.get_space(space_hash).await?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
         Commands::GetSpaceOut { outpoint } => {
@@ -429,22 +429,22 @@ async fn handle_commands(
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
         Commands::CreateWallet { name } => {
-            cli.client.wallet_create(&name).await?;
+            cli.client.wallet_create(name).await?;
         }
         Commands::LoadWallet { name } => {
-            cli.client.wallet_load(&name).await?;
+            cli.client.wallet_load(name).await?;
         }
         Commands::ImportWallet { path } => {
             let content =
                 fs::read_to_string(path).map_err(|e| ClientError::Custom(e.to_string()))?;
-            cli.client.wallet_import(&content).await?;
+            cli.client.wallet_import(content).await?;
         }
         Commands::ExportWallet { name } => {
-            let result = cli.client.wallet_export(&name).await?;
+            let result = cli.client.wallet_export(name).await?;
             println!("{}", result);
         }
         Commands::GetWalletInfo { name } => {
-            let result = cli.client.wallet_get_info(&name).await?;
+            let result = cli.client.wallet_get_info(name).await?;
             println!("{}", serde_json::to_string_pretty(&result).expect("result"));
         }
         Commands::GetServerInfo => {
@@ -559,32 +559,32 @@ async fn handle_commands(
             .await?;
         }
         Commands::ListUnspent => {
-            let spaces = cli.client.wallet_list_unspent(&cli.wallet).await?;
+            let spaces = cli.client.wallet_list_unspent(cli.wallet.clone()).await?;
             println!("{}", serde_json::to_string_pretty(&spaces)?);
         }
         Commands::ListAuctionOutputs => {
-            let spaces = cli.client.wallet_list_auction_outputs(&cli.wallet).await?;
+            let spaces = cli.client.wallet_list_auction_outputs(cli.wallet.clone()).await?;
             println!("{}", serde_json::to_string_pretty(&spaces)?);
         }
         Commands::ListSpaces => {
-            let spaces = cli.client.wallet_list_spaces(&cli.wallet).await?;
+            let spaces = cli.client.wallet_list_spaces(cli.wallet.clone()).await?;
             println!("{}", serde_json::to_string_pretty(&spaces)?);
         }
         Commands::Balance => {
-            let balance = cli.client.wallet_get_balance(&cli.wallet).await?;
+            let balance = cli.client.wallet_get_balance(cli.wallet.clone()).await?;
             println!("{}", serde_json::to_string_pretty(&balance)?);
         }
         Commands::GetCoinAddress => {
             let response = cli
                 .client
-                .wallet_get_new_address(&cli.wallet, AddressKind::Coin)
+                .wallet_get_new_address(cli.wallet.clone(), AddressKind::Coin)
                 .await?;
             println!("{}", response);
         }
         Commands::GetSpaceAddress => {
             let response = cli
                 .client
-                .wallet_get_new_address(&cli.wallet, AddressKind::Space)
+                .wallet_get_new_address(cli.wallet.clone(), AddressKind::Space)
                 .await?;
             println!("{}", response);
         }
@@ -592,7 +592,7 @@ async fn handle_commands(
             let fee_rate = FeeRate::from_sat_per_vb(fee_rate).expect("valid fee rate");
             let response = cli
                 .client
-                .wallet_bump_fee(&cli.wallet, txid, fee_rate)
+                .wallet_bump_fee(cli.wallet.clone(), txid, fee_rate)
                 .await?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
