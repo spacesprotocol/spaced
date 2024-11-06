@@ -875,7 +875,7 @@ impl AsyncChainState {
                 height
             ));
         }
-        Err(anyhow!("Could not retrieve block"))
+        Ok(None)
     }
 
     pub async fn handle_command(
