@@ -22,8 +22,6 @@ impl SpaceAddress {
 
 impl fmt::Display for SpaceAddress {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        // let pubkey = self.0.script_pubkey();
-        // let raw_program = &pubkey.as_bytes()[2..];
         let program = self.0.witness_program().expect("p2tr address");
         let address = self.0.to_string();
         let hrp = find_bech32_prefix(&address);
@@ -47,7 +45,7 @@ impl From<Address> for SpaceAddress {
 }
 
 impl FromStr for SpaceAddress {
-    type Err = protocol::bitcoin::address::ParseError;
+    type Err = ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         // try bech32

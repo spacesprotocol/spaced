@@ -332,39 +332,40 @@ impl Builder {
         let mut vout: u32 = 0;
         let mut tap_outputs = Vec::new();
         let change_address = w
-            .coins
+            .spaces
             .next_unused_address(KeychainKind::Internal)
             .script_pubkey();
 
+        let mut placeholder_outputs = Vec::new();
+        if let Some(placeholders) = auction_outputs {
+            for _ in 0..placeholders {
+                // Each placeholder is 2 UTXOs: Keeping outputs adjacent to detect if
+                // one is spent in an auction.
+                // pointer/spend output
+                let addr1 = w
+                    .spaces
+                    .next_unused_address(KeychainKind::Internal)
+                    .script_pubkey();
+                let dust = match dust {
+                    None => addr1.minimal_non_dust().mul(2),
+                    Some(dust) => dust,
+                };
+                let magic_dust = magic_dust(dust);
+                placeholder_outputs.push((addr1, dust));
+                // auctioned output
+                let addr2 = w.spaces.next_unused_address(KeychainKind::External);
+                placeholder_outputs.push((addr2.script_pubkey(), magic_dust));
+            }
+        }
+
         let commit_psbt = {
-            let mut builder = w.coins.build_tx().coin_selection(coin_selection);
+            let mut builder = w.spaces.build_tx().coin_selection(coin_selection);
             builder.nlocktime(magic_lock_time(median_time));
 
             builder.ordering(TxOrdering::Untouched);
-            if let Some(placeholders) = auction_outputs {
-                for _ in 0..placeholders {
-                    // Each placeholder is 2 UTXOs: Keeping outputs adjacent to detect if
-                    // one is spent in an auction.
-
-                    // pointer/spend output
-                    let addr1 = w
-                        .spaces
-                        .next_unused_address(KeychainKind::Internal)
-                        .script_pubkey();
-                    let dust = match dust {
-                        None => addr1.minimal_non_dust().mul(2),
-                        Some(dust) => dust,
-                    };
-                    let magic_dust = magic_dust(dust);
-
-                    builder.add_recipient(addr1, dust);
-
-                    // auctioned output
-                    let addr2 = w.spaces.next_unused_address(KeychainKind::External);
-                    builder.add_recipient(addr2.script_pubkey(), magic_dust);
-
-                    vout += 2;
-                }
+            for (addr, amount) in placeholder_outputs {
+                builder.add_recipient(addr, amount);
+                vout += 1;
             }
 
             if let Some(tap_data) = reveals {
@@ -784,7 +785,7 @@ impl Builder {
     ) -> anyhow::Result<Transaction> {
         let (offer, placeholder) = w.new_bid_psbt(bid)?;
         let bid_psbt = {
-            let mut builder = w.coins.build_tx().coin_selection(coin_selection);
+            let mut builder = w.spaces.build_tx().coin_selection(coin_selection);
             builder
                 .ordering(TxOrdering::Untouched)
                 .nlocktime(LockTime::Blocks(Height::ZERO))
@@ -815,7 +816,7 @@ impl Builder {
         let (offer, placeholder) = w.new_bid_psbt(params.amount)?;
         let mut extra_prevouts = BTreeMap::new();
         let open_psbt = {
-            let mut builder = w.coins.build_tx().coin_selection(coin_selection);
+            let mut builder = w.spaces.build_tx().coin_selection(coin_selection);
             builder.ordering(TxOrdering::Untouched).add_bid(
                 None,
                 offer,
@@ -847,10 +848,10 @@ impl Builder {
         let mut extra_prevouts = BTreeMap::new();
         let reveal_psbt = {
             let change_address = w
-                .coins
+                .spaces
                 .next_unused_address(KeychainKind::Internal)
                 .script_pubkey();
-            let mut builder = w.coins.build_tx().coin_selection(coin_selection);
+            let mut builder = w.spaces.build_tx().coin_selection(coin_selection);
 
             builder
                 .ordering(TxOrdering::Untouched)
@@ -902,13 +903,16 @@ pub struct SpacesAwareCoinSelection {
     pub default_algorithm: DefaultCoinSelectionAlgorithm,
     // Additional UTXOs to fund the transaction
     pub other_optional_utxos: RefCell<Vec<WeightedUtxo>>,
+    // Exclude outputs
+    pub exclude_outputs: Vec<OutPoint>,
 }
 
 impl SpacesAwareCoinSelection {
-    pub fn new(optional_utxos: Vec<WeightedUtxo>) -> Self {
+    pub fn new(optional_utxos: Vec<WeightedUtxo>, excluded: Vec<OutPoint>) -> Self {
         Self {
             default_algorithm: DefaultCoinSelectionAlgorithm::default(),
             other_optional_utxos: RefCell::new(optional_utxos),
+            exclude_outputs: excluded,
         }
     }
 }
@@ -927,7 +931,16 @@ impl CoinSelectionAlgorithm for SpacesAwareCoinSelection {
             .map(|w| w.utxo.clone())
             .collect::<Vec<_>>();
 
+        // Extend optional outputs
         optional_utxos.extend(self.other_optional_utxos.borrow().iter().cloned());
+
+        // Filter out excluded outputs
+        optional_utxos.retain(|weighted_utxo| {
+            !self
+                .exclude_outputs
+                .contains(&weighted_utxo.utxo.outpoint())
+        });
+
         let mut result = self.default_algorithm.coin_select(
             required_utxos,
             optional_utxos,

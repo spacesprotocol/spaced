@@ -1,17 +1,14 @@
 use std::{
     collections::BTreeMap,
-    fmt,
     fmt::Debug,
     fs,
     path::PathBuf,
-    str::FromStr,
     time::{Duration, SystemTime},
 };
 
 use anyhow::{anyhow, Context};
 use bdk_wallet::{
     chain::{BlockId, ConfirmationTime},
-    descriptor::IntoWalletDescriptor,
     wallet::{
         coin_selection::{CoinSelectionAlgorithm, CoinSelectionResult, Error, Excess},
         tx_builder::TxOrdering,
@@ -46,31 +43,14 @@ pub extern crate bitcoin;
 
 pub mod address;
 pub mod builder;
-pub mod derivation;
+pub mod export;
 
 const WALLET_SPACE_MAGIC: &[u8; 12] = b"WALLET_SPACE";
-const WALLET_COIN_MAGIC: &[u8; 12] = b"WALLET_COINS";
 
 pub struct SpacesWallet {
     pub config: WalletConfig,
-    pub coins: bdk_wallet::wallet::Wallet,
     pub spaces: bdk_wallet::wallet::Wallet,
-    pub coins_db: bdk_file_store::Store<ChangeSet>,
     pub spaces_db: bdk_file_store::Store<ChangeSet>,
-}
-
-/// Implements wallet export format used by [FullyNoded](https://github.com/Fonta1n3/FullyNoded/blob/10b7808c8b929b171cca537fb50522d015168ac9/Docs/Wallets/Wallet-Export-Spec.md).
-/// With the addition of "spaces_descriptor"
-/// export is adopted from bdk https://github.com/bitcoindevkit/bdk/blob/master/crates/wallet/src/wallet/export.rs
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WalletExport {
-    pub descriptor: String,
-    pub spaces_descriptor: String,
-    /// Earliest block to rescan when looking for the wallet's transactions
-    #[serde(rename = "blockheight")]
-    pub block_height: u32,
-    /// Arbitrary label for the wallet
-    pub label: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,7 +71,7 @@ pub struct DescriptorInfo {
 
 #[derive(Debug, Clone)]
 pub struct SpaceScriptSigningInfo {
-    pub(crate) ctx: bitcoin::secp256k1::Secp256k1<bitcoin::secp256k1::All>,
+    pub(crate) ctx: secp256k1::Secp256k1<secp256k1::All>,
     pub(crate) script: ScriptBuf,
     pub(crate) control_block: ControlBlock,
     pub(crate) temp_key_pair: UntweakedKeypair,
@@ -117,51 +97,12 @@ pub struct WalletConfig {
     pub start_block: u32,
     pub network: Network,
     pub genesis_hash: Option<BlockHash>,
-    pub coins_descriptors: WalletDescriptors,
     pub space_descriptors: WalletDescriptors,
 }
 
 pub struct WalletDescriptors {
     pub external: String,
     pub internal: String,
-}
-
-impl WalletExport {
-    pub fn from_descriptors<C: IntoWalletDescriptor, S: IntoWalletDescriptor>(
-        label: String,
-        block_height: u32,
-        network: Network,
-        coins: C,
-        spaces: S,
-    ) -> anyhow::Result<Self> {
-        let coin_ctx = bdk_wallet::bitcoin::secp256k1::Secp256k1::new();
-        let (coin_external, coin_keys) = coins.into_wallet_descriptor(&coin_ctx, network)?;
-        let (space_external, space_keys) = spaces.into_wallet_descriptor(&coin_ctx, network)?;
-
-        let coin_external = remove_checksum(coin_external.to_string_with_secret(&coin_keys));
-        let space_external = remove_checksum(space_external.to_string_with_secret(&space_keys));
-
-        Ok(WalletExport {
-            descriptor: coin_external,
-            spaces_descriptor: space_external,
-            block_height,
-            label,
-        })
-    }
-
-    pub fn descriptors(&self) -> WalletDescriptors {
-        WalletDescriptors {
-            external: self.descriptor.clone(),
-            internal: self.descriptor.replace("/0/*", "/1/*").clone(),
-        }
-    }
-
-    pub fn space_descriptors(&self) -> WalletDescriptors {
-        WalletDescriptors {
-            external: self.spaces_descriptor.clone(),
-            internal: self.spaces_descriptor.replace("/0/*", "/1/*").clone(),
-        }
-    }
 }
 
 impl SpacesWallet {
@@ -179,25 +120,10 @@ impl SpacesWallet {
             bdk_file_store::Store::<ChangeSet>::open_or_create_new(WALLET_SPACE_MAGIC, spaces_path)
                 .context("create store for spaces")?;
 
-        let coins_path = config.data_dir.join("coins.db");
-        let mut coins_db =
-            bdk_file_store::Store::<ChangeSet>::open_or_create_new(WALLET_COIN_MAGIC, coins_path)
-                .context("create store for coins")?;
-
         let genesis_hash = match config.genesis_hash {
             None => genesis_block(config.network).block_hash(),
             Some(hash) => hash,
         };
-
-        let coins_changeset = coins_db.aggregate_changesets()?;
-
-        let coins_wallet = bdk_wallet::wallet::Wallet::new_or_load_with_genesis_hash(
-            &config.coins_descriptors.external,
-            &config.coins_descriptors.internal,
-            coins_changeset,
-            config.network,
-            genesis_hash,
-        )?;
 
         let spaces_changeset = spaces_db.aggregate_changesets()?;
         let spaces_wallet = bdk_wallet::wallet::Wallet::new_or_load_with_genesis_hash(
@@ -210,9 +136,7 @@ impl SpacesWallet {
 
         let wallet = Self {
             config,
-            coins: coins_wallet,
             spaces: spaces_wallet,
-            coins_db,
             spaces_db,
         };
 
@@ -223,7 +147,6 @@ impl SpacesWallet {
     pub fn rebuild(self) -> anyhow::Result<Self> {
         let config = self.config;
         drop(self.spaces_db);
-        drop(self.coins_db);
         fs::remove_file(config.data_dir.join("spaces.db"))?;
         fs::remove_file(config.data_dir.join("coins.db"))?;
         Ok(SpacesWallet::new(config)?)
@@ -232,22 +155,6 @@ impl SpacesWallet {
     pub fn get_info(&self) -> WalletInfo {
         let mut descriptors = Vec::with_capacity(4);
 
-        descriptors.push(DescriptorInfo {
-            descriptor: self
-                .coins
-                .public_descriptor(KeychainKind::External)
-                .to_string(),
-            internal: false,
-            spaces: false,
-        });
-        descriptors.push(DescriptorInfo {
-            descriptor: self
-                .coins
-                .public_descriptor(KeychainKind::Internal)
-                .to_string(),
-            internal: true,
-            spaces: false,
-        });
         descriptors.push(DescriptorInfo {
             descriptor: self
                 .spaces
@@ -268,40 +175,8 @@ impl SpacesWallet {
         WalletInfo {
             label: self.config.name.clone(),
             start_block: self.config.start_block,
-            tip: self.coins.local_chain().tip().height(),
+            tip: self.spaces.local_chain().tip().height(),
             descriptors,
-        }
-    }
-
-    pub fn export(&self) -> WalletExport {
-        let descriptor = self
-            .coins
-            .public_descriptor(KeychainKind::External)
-            .to_string_with_secret(
-                &self
-                    .coins
-                    .get_signers(KeychainKind::External)
-                    .as_key_map(self.coins.secp_ctx()),
-            );
-
-        let spaces_descriptor = self
-            .coins
-            .public_descriptor(KeychainKind::External)
-            .to_string_with_secret(
-                &self
-                    .spaces
-                    .get_signers(KeychainKind::External)
-                    .as_key_map(self.spaces.secp_ctx()),
-            );
-
-        let descriptor = remove_checksum(descriptor);
-        let spaces_descriptor = remove_checksum(spaces_descriptor);
-
-        WalletExport {
-            descriptor,
-            spaces_descriptor,
-            block_height: self.config.start_block,
-            label: self.config.name.clone(),
         }
     }
 
@@ -316,8 +191,6 @@ impl SpacesWallet {
         block: &Block,
         block_id: BlockId,
     ) -> anyhow::Result<()> {
-        self.coins
-            .apply_block_connected_to(&block, height, block_id)?;
         self.spaces
             .apply_block_connected_to(&block, height, block_id)?;
 
@@ -329,15 +202,10 @@ impl SpacesWallet {
         tx: Transaction,
         position: ConfirmationTime,
     ) -> Result<bool, InsertTxError> {
-        self.spaces.insert_tx(tx.clone(), position)?;
-        self.coins.insert_tx(tx, position)
+        self.spaces.insert_tx(tx.clone(), position)
     }
 
     pub fn commit(&mut self) -> anyhow::Result<()> {
-        if let Some(changeset) = self.coins.take_staged() {
-            self.coins_db.append_changeset(&changeset)?;
-        }
-
         if let Some(changeset) = self.spaces.take_staged() {
             self.spaces_db.append_changeset(&changeset)?;
         }
@@ -511,10 +379,6 @@ impl SpacesWallet {
             }
         }
 
-        if !self.coins.sign(&mut psbt, SignOptions::default())? {
-            return Err(anyhow!("could not finalize psbt using coins signer"));
-        }
-
         for input in psbt.inputs.iter_mut() {
             if input.proprietary.contains_key(&Self::spaces_signer("tbs")) {
                 // To be signed by the default spaces signer
@@ -553,12 +417,6 @@ impl SpacesWallet {
         for input in tx.input.iter() {
             if let Some(prevout) = extras.get(&input.previous_output) {
                 prevouts.push(prevout.clone());
-                continue;
-            }
-
-            let coin_utxo = self.coins.get_utxo(input.previous_output);
-            if let Some(coin_utxo) = coin_utxo {
-                prevouts.push(coin_utxo.txout);
                 continue;
             }
 
@@ -609,16 +467,15 @@ impl SpacesWallet {
         let script_info_dir = self.config.data_dir.join("script_solutions");
         let filename = hex::encode(script.as_bytes());
         let file_path = script_info_dir.join(filename);
-        std::fs::read(file_path).ok()
+        fs::read(file_path).ok()
     }
 
     fn save_signing_info(&self, script: ScriptBuf, raw: Vec<u8>) -> anyhow::Result<()> {
         let script_info_dir = self.config.data_dir.join("script_solutions");
-        std::fs::create_dir_all(&script_info_dir)
-            .context("could not create script_info directory")?;
+        fs::create_dir_all(&script_info_dir).context("could not create script_info directory")?;
         let filename = hex::encode(script.as_bytes());
         let file_path = script_info_dir.join(filename);
-        std::fs::write(file_path, raw)?;
+        fs::write(file_path, raw)?;
         Ok(())
     }
 
@@ -789,29 +646,5 @@ impl<'de> Deserialize<'de> for SpaceScriptSigningInfo {
         }
 
         deserializer.deserialize_seq(OpenSigningInfoVisitor)
-    }
-}
-
-fn remove_checksum(s: String) -> String {
-    s.split_once('#').map(|(a, _)| String::from(a)).unwrap()
-}
-
-impl fmt::Display for WalletExport {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", serde_json::to_string(self).unwrap())
-    }
-}
-
-impl fmt::Display for WalletInfo {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", serde_json::to_string(self).unwrap())
-    }
-}
-
-impl FromStr for WalletExport {
-    type Err = serde_json::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        serde_json::from_str(s)
     }
 }
