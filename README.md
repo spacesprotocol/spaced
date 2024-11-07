@@ -10,26 +10,50 @@ Spaces is a naming protocol that leverages the existing infrastructure and secur
 | wallet   | Yes (no-std WIP) | wallet library for building spaces transactions|
 | protocol | No               | Protocol consensus library                     |
 
-## Setup
+# Installation
 
-First, download Bitcoin Core and set it up to connect to `regtest`
-using these steps:
+### Install Bitcoin Core
+Bitcoin Core of version 28+ is required. It can be installed from the official [download page](https://bitcoincore.org/en/download/).
 
-```bash
-# Create a directory for Bitcoin regtest data
-mkdir $HOME/bitcoin-regtest
-echo "rpcuser=test" > $HOME/bitcoin-regtest/bitcoin.conf
-echo "rpcpassword=test" >> $HOME/bitcoin-regtest/bitcoin.conf
-bitcoind -regtest -datadir=$HOME/bitcoin-regtest
-```
+### Install Spaces Daemon
 
-```bash
+`spaced` is a tiny layer that connects to Bitcoin Core over RPC and scans transactions relevant to the protocol. Make sure you have [Rust](https://www.rust-lang.org/tools/install) installed before proceeding.
+
+```sh
 git clone https://github.com/spacesprotocol/spaced && cd spaced
-cargo build
+cargo install --path node --locked
 ```
 
-Connect `spaced` to Bitcoin core
+Make sure it's in your path
 
-```bash
-spaced --chain regtest --bitcoin-rpc-user test --bitcoin-rpc-password test
+```sh
+echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+Verify installation
+
+```
+spaced --version
+space-cli --version
+```
+
+### Setup
+
+First, download Bitcoin Core and set it up to connect to `testnet4` using these steps:
+
+```sh
+mkdir $HOME/bitcoin-testnet4
+
+# Create a configuration file with RPC credentials
+echo "rpcuser=testnet4" > $HOME/bitcoin-testnet4/bitcoin.conf
+echo "rpcpassword=testnet4" >> $HOME/bitcoin-testnet4/bitcoin.conf
+
+# Start Bitcoin Core specifying testnet4 network
+bitcoind -testnet4 -datadir=$HOME/bitcoin-testnet4
+```
+
+Next, run spaced with the following:
+```sh
+spaced --chain testnet4 --bitcoin-rpc-user testnet4 --bitcoin-rpc-password testnet4
 ```
