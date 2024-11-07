@@ -828,7 +828,7 @@ impl AsyncChainState {
         let block_hash = BlockHash::from_str(
             info.get("blockhash")
                 .and_then(|t| t.as_str())
-                .ok_or_else(|| anyhow!("Could not retrieve block hash"))?,
+                .ok_or_else(|| anyhow!("Could not retrieve block hash for tx (is it in the mempool?)"))?,
         )?;
         let block = Self::get_indexed_block(index, &block_hash, client, rpc, chain_state).await?;
 
