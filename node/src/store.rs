@@ -13,7 +13,7 @@ use bincode::{config, Decode, Encode};
 use protocol::{
     bitcoin::OutPoint,
     constants::{ChainAnchor, ROLLOUT_BATCH_SIZE},
-    hasher::{BidHash, KeyHash, OutpointHash, SpaceHash},
+    hasher::{BidKey, KeyHash, OutpointKey, SpaceKey},
     prepare::DataSource,
     FullSpaceOut, SpaceOut,
 };
@@ -141,41 +141,41 @@ impl From<EncodableOutpoint> for OutPoint {
 }
 
 pub trait ChainState {
-    fn insert_spaceout(&self, key: OutpointHash, spaceout: SpaceOut);
-    fn insert_space(&self, key: SpaceHash, outpoint: EncodableOutpoint);
+    fn insert_spaceout(&self, key: OutpointKey, spaceout: SpaceOut);
+    fn insert_space(&self, key: SpaceKey, outpoint: EncodableOutpoint);
 
-    fn update_bid(&self, previous: Option<BidHash>, bid: BidHash, space: SpaceHash);
+    fn update_bid(&self, previous: Option<BidKey>, bid: BidKey, space: SpaceKey);
 
     fn get_space_info(
         &mut self,
-        space_hash: &protocol::hasher::SpaceHash,
+        space_hash: &protocol::hasher::SpaceKey,
     ) -> anyhow::Result<Option<FullSpaceOut>>;
 }
 
 impl ChainState for LiveSnapshot {
-    fn insert_spaceout(&self, key: OutpointHash, spaceout: SpaceOut) {
+    fn insert_spaceout(&self, key: OutpointKey, spaceout: SpaceOut) {
         self.insert(key, spaceout)
     }
 
-    fn insert_space(&self, key: SpaceHash, outpoint: EncodableOutpoint) {
+    fn insert_space(&self, key: SpaceKey, outpoint: EncodableOutpoint) {
         self.insert(key, outpoint)
     }
 
-    fn update_bid(&self, previous: Option<BidHash>, bid: BidHash, space: SpaceHash) {
+    fn update_bid(&self, previous: Option<BidKey>, bid: BidKey, space: SpaceKey) {
         if let Some(previous) = previous {
             self.remove(previous);
         }
         self.insert(bid, space)
     }
 
-    fn get_space_info(&mut self, space_hash: &SpaceHash) -> anyhow::Result<Option<FullSpaceOut>> {
+    fn get_space_info(&mut self, space_hash: &SpaceKey) -> anyhow::Result<Option<FullSpaceOut>> {
         let outpoint = self.get_space_outpoint(space_hash)?;
 
         if let Some(outpoint) = outpoint {
             let spaceout = self.get_spaceout(&outpoint)?;
 
             return Ok(Some(FullSpaceOut {
-                outpoint,
+                txid: outpoint.txid,
                 spaceout: spaceout.expect("should exist if outpoint exists"),
             }));
         }
@@ -324,7 +324,7 @@ impl LiveSnapshot {
         Ok(*priority as u64)
     }
 
-    pub fn get_rollout(&mut self, target: usize) -> anyhow::Result<Vec<(u32, SpaceHash)>> {
+    pub fn get_rollout(&mut self, target: usize) -> anyhow::Result<Vec<(u32, SpaceKey)>> {
         let skip = target * ROLLOUT_BATCH_SIZE;
         let entries = self.get_rollout_entries(Some(ROLLOUT_BATCH_SIZE), skip)?;
 
@@ -335,7 +335,7 @@ impl LiveSnapshot {
         &mut self,
         limit: Option<usize>,
         skip: usize,
-    ) -> anyhow::Result<Vec<(u32, SpaceHash)>> {
+    ) -> anyhow::Result<Vec<(u32, SpaceKey)>> {
         // TODO: this could use some clean up
         let rlock = self.staged.read().expect("acquire lock");
         let mut deleted = BTreeSet::new();
@@ -344,13 +344,13 @@ impl LiveSnapshot {
             .iter()
             .rev()
             .filter_map(|(key, value)| {
-                if BidHash::is_valid(key) {
+                if BidKey::is_valid(key) {
                     if value.is_some() {
                         let spacehash =
-                            SpaceHash::from_slice_unchecked(value.as_ref().unwrap().as_slice());
-                        Some((BidHash::from_slice_unchecked(key.as_slice()), spacehash))
+                            SpaceKey::from_slice_unchecked(value.as_ref().unwrap().as_slice());
+                        Some((BidKey::from_slice_unchecked(key.as_slice()), spacehash))
                     } else {
-                        deleted.insert(BidHash::from_slice_unchecked(key.as_slice()));
+                        deleted.insert(BidKey::from_slice_unchecked(key.as_slice()));
                         None
                     }
                 } else {
@@ -390,7 +390,7 @@ impl LiveSnapshot {
 impl protocol::prepare::DataSource for LiveSnapshot {
     fn get_space_outpoint(
         &mut self,
-        space_hash: &protocol::hasher::SpaceHash,
+        space_hash: &protocol::hasher::SpaceKey,
     ) -> protocol::errors::Result<Option<OutPoint>> {
         let result: Option<EncodableOutpoint> = self
             .get(*space_hash)
@@ -399,7 +399,7 @@ impl protocol::prepare::DataSource for LiveSnapshot {
     }
 
     fn get_spaceout(&mut self, outpoint: &OutPoint) -> protocol::errors::Result<Option<SpaceOut>> {
-        let h = OutpointHash::from_outpoint::<Sha256>(*outpoint);
+        let h = OutpointKey::from_outpoint::<Sha256>(*outpoint);
         let result = self
             .get(h)
             .map_err(|err| protocol::errors::Error::IO(err.to_string()))?;
@@ -427,7 +427,7 @@ impl Iterator for RolloutIterator {
 
             match result {
                 Ok((key, value)) => {
-                    if BidHash::is_valid(&key) {
+                    if BidKey::is_valid(&key) {
                         return Some(Ok((key, value)));
                     }
                 }
@@ -445,13 +445,13 @@ struct KeyRolloutIterator {
 }
 
 impl Iterator for KeyRolloutIterator {
-    type Item = anyhow::Result<(BidHash, SpaceHash)>;
+    type Item = anyhow::Result<(BidKey, SpaceKey)>;
     fn next(&mut self) -> Option<Self::Item> {
         while let Some(result) = self.iter.next() {
             match result {
-                Ok((key, value)) if BidHash::is_valid(&key) => {
-                    let spacehash = SpaceHash::from_slice_unchecked(value.as_slice());
-                    let bidhash = BidHash::from_slice_unchecked(key.as_slice());
+                Ok((key, value)) if BidKey::is_valid(&key) => {
+                    let spacehash = SpaceKey::from_slice_unchecked(value.as_slice());
+                    let bidhash = BidKey::from_slice_unchecked(key.as_slice());
                     return Some(Ok((bidhash, spacehash)));
                 }
                 Ok(_) => {
@@ -466,8 +466,8 @@ impl Iterator for KeyRolloutIterator {
 
 struct MergingIterator<I1, I2>
 where
-    I1: Iterator<Item = Result<(BidHash, SpaceHash)>>,
-    I2: Iterator<Item = Result<(BidHash, SpaceHash)>>,
+    I1: Iterator<Item = Result<(BidKey, SpaceKey)>>,
+    I2: Iterator<Item = Result<(BidKey, SpaceKey)>>,
 {
     iter1: std::iter::Peekable<I1>,
     iter2: std::iter::Peekable<I2>,
@@ -475,8 +475,8 @@ where
 
 impl<I1, I2> MergingIterator<I1, I2>
 where
-    I1: Iterator<Item = Result<(BidHash, SpaceHash)>>,
-    I2: Iterator<Item = Result<(BidHash, SpaceHash)>>,
+    I1: Iterator<Item = Result<(BidKey, SpaceKey)>>,
+    I2: Iterator<Item = Result<(BidKey, SpaceKey)>>,
 {
     fn new(iter1: I1, iter2: I2) -> Self {
         MergingIterator {
@@ -488,10 +488,10 @@ where
 
 impl<I1, I2> Iterator for MergingIterator<I1, I2>
 where
-    I1: Iterator<Item = Result<(BidHash, SpaceHash)>>,
-    I2: Iterator<Item = Result<(BidHash, SpaceHash)>>,
+    I1: Iterator<Item = Result<(BidKey, SpaceKey)>>,
+    I2: Iterator<Item = Result<(BidKey, SpaceKey)>>,
 {
-    type Item = Result<(BidHash, SpaceHash)>;
+    type Item = Result<(BidKey, SpaceKey)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match (self.iter1.peek(), self.iter2.peek()) {

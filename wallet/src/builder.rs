@@ -182,9 +182,9 @@ impl<'a, Cs: CoinSelectionAlgorithm> TxBuilderSpacesUtils<'a, Cs> for TxBuilder<
         };
 
         let tap_key_spend_weight = 66;
-        self.version(BID_PSBT_TX_VERSION);
+        self.version(BID_PSBT_TX_VERSION.0);
         self.add_foreign_utxo_with_sequence(
-            info.outpoint,
+            info.outpoint(),
             input,
             tap_key_spend_weight,
             BID_PSBT_INPUT_SEQUENCE,
@@ -295,7 +295,14 @@ impl<'a, Cs: CoinSelectionAlgorithm> TxBuilderSpacesUtils<'a, Cs> for TxBuilder<
                 spend_input
                     .proprietary
                     .insert(SpacesWallet::spaces_signer("tbs"), Vec::new());
-                self.add_foreign_utxo(request.space.outpoint, spend_input, 66)?;
+                self.add_foreign_utxo(
+                    OutPoint {
+                        txid: request.space.txid,
+                        vout: request.space.spaceout.n as u32,
+                    },
+                    spend_input,
+                    66,
+                )?;
                 self.add_recipient(
                     request.recipient.script_pubkey(),
                     request.space.spaceout.value,

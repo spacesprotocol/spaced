@@ -11,7 +11,7 @@ use tokio::sync::broadcast;
 
 use crate::{
     config::ExtendedNetwork,
-    node::{BlockSource, Node, ValidatedBlock},
+    node::{BlockMeta, BlockSource, Node},
     source::{BitcoinBlockSource, BitcoinRpc, BlockEvent, BlockFetchError, BlockFetcher},
     store::LiveStore,
 };
@@ -98,7 +98,7 @@ impl Spaced {
     pub fn save_block(
         store: LiveStore,
         block_hash: BlockHash,
-        block: ValidatedBlock,
+        block: BlockMeta,
     ) -> anyhow::Result<()> {
         store
             .state

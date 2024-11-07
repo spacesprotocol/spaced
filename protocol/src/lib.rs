@@ -15,7 +15,7 @@ use bitcoin::{
     sighash::{Prevouts, SighashCache, TapSighashType},
     taproot,
     transaction::Version,
-    Amount, OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Witness,
+    Amount, OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Txid, Witness,
 };
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -39,7 +39,7 @@ pub mod validate;
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 pub struct FullSpaceOut {
     #[cfg_attr(feature = "bincode", bincode(with_serde))]
-    pub outpoint: OutPoint,
+    pub txid: Txid,
 
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub spaceout: SpaceOut,
@@ -51,15 +51,16 @@ pub struct FullSpaceOut {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 pub struct SpaceOut {
+    pub n: usize,
+    /// Any space associated with this output
+    #[cfg_attr(feature = "serde", serde(flatten))]
+    pub space: Option<Space>,
     /// The value of the output, in satoshis.
     #[cfg_attr(feature = "bincode", bincode(with_serde))]
     pub value: Amount,
     /// The script which must be satisfied for the output to be spent.
     #[cfg_attr(feature = "bincode", bincode(with_serde))]
     pub script_pubkey: ScriptBuf,
-    /// Any space associated with this output
-    #[cfg_attr(feature = "serde", serde(flatten))]
-    pub space: Option<Space>,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -114,7 +115,10 @@ pub enum Covenant {
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
-#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[cfg_attr(
+    feature = "serde",
+    serde(rename_all = "snake_case", tag = "revoke_reason")
+)]
 pub enum RevokeReason {
     BidPsbt(BidPsbtReason),
     /// Space was prematurely spent during the auctions phase
@@ -125,16 +129,24 @@ pub enum RevokeReason {
     Expired,
 }
 
-#[derive(Copy, Clone, PartialEq, Debug)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Copy, Clone, PartialEq, Debug, Eq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(Serialize, Deserialize),
+    serde(rename_all = "snake_case")
+)]
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 pub enum RejectReason {
     AlreadyExists,
     BidPSBT(BidPsbtReason),
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(Serialize, Deserialize),
+    serde(rename_all = "snake_case", tag = "bid_psbt_reason")
+)]
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 pub enum BidPsbtReason {
     Required,
@@ -162,7 +174,7 @@ impl Space {
         }
     }
 
-    pub fn is_bid_spend(&self, tx_version: i32, txin: &TxIn) -> bool {
+    pub fn is_bid_spend(&self, tx_version: Version, txin: &TxIn) -> bool {
         if tx_version != BID_PSBT_TX_VERSION
             || txin.sequence != BID_PSBT_INPUT_SEQUENCE
             || txin.witness.len() != 1
@@ -200,6 +212,13 @@ impl Space {
 }
 
 impl FullSpaceOut {
+    pub fn outpoint(&self) -> OutPoint {
+        OutPoint {
+            txid: self.txid,
+            vout: self.spaceout.n as u32,
+        }
+    }
+
     pub fn verify_bid_sig(&self) -> bool {
         if !self.spaceout.script_pubkey.is_p2tr() {
             return false;
@@ -329,10 +348,13 @@ impl FullSpaceOut {
         );
 
         let tx = Transaction {
-            version: Version(BID_PSBT_TX_VERSION),
+            version: BID_PSBT_TX_VERSION,
             lock_time: BID_PSBT_TX_LOCK_TIME,
             input: vec![TxIn {
-                previous_output: auctioned_utxo.outpoint,
+                previous_output: OutPoint {
+                    txid: auctioned_utxo.txid,
+                    vout: auctioned_utxo.spaceout.n as u32,
+                },
                 sequence: BID_PSBT_INPUT_SEQUENCE,
                 witness,
                 ..Default::default()

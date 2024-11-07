@@ -15,10 +15,11 @@ use bitcoin::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    hasher::{KeyHasher, SpaceHash},
+    hasher::{KeyHasher, SpaceKey},
     opcodes::{SpaceOpcode, *},
     prepare::DataSource,
     sname::{NameLike, SName, SNameRef},
+    validate::RejectParams,
     FullSpaceOut,
 };
 
@@ -39,6 +40,7 @@ pub struct ScriptMachine {
 pub struct OpOpenContext {
     // Whether its attempting to open a new space or an existing one
     pub spaceout: SpaceKind,
+    pub input_index: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -78,6 +80,7 @@ pub enum SpaceInstruction<'a> {
 
 impl ScriptMachine {
     fn op_open<T: DataSource, H: KeyHasher>(
+        input_index: usize,
         src: &mut T,
         stack: &mut Vec<Vec<&[u8]>>,
     ) -> crate::errors::Result<ScriptResult<OpOpenContext>> {
@@ -100,22 +103,26 @@ impl ScriptMachine {
         };
 
         let spaceout = {
-            let spacehash = SpaceHash::from(H::hash(name.to_bytes()));
+            let spacehash = SpaceKey::from(H::hash(name.to_bytes()));
             let existing = src.get_space_outpoint(&spacehash)?;
             match existing {
                 None => SpaceKind::NewSpace(name.to_owned()),
                 Some(outpoint) => SpaceKind::ExistingSpace(FullSpaceOut {
-                    outpoint,
+                    txid: outpoint.txid,
                     spaceout: src.get_spaceout(&outpoint)?.expect("spaceout exists"),
                 }),
             }
         };
 
-        let open = Ok(OpOpenContext { spaceout });
+        let open = Ok(OpOpenContext {
+            input_index,
+            spaceout,
+        });
         Ok(open)
     }
 
     pub fn execute<T: DataSource, H: KeyHasher>(
+        input_index: usize,
         src: &mut T,
         script: &Script,
     ) -> crate::errors::Result<Result<Self, ScriptError>> {
@@ -138,11 +145,10 @@ impl ScriptMachine {
                 SpaceInstruction::Op(op) => {
                     match op.code {
                         OP_OPEN => {
-                            let open_result = Self::op_open::<T, H>(src, &mut stack)?;
+                            let open_result = Self::op_open::<T, H>(input_index, src, &mut stack)?;
                             if open_result.is_err() {
                                 return Ok(Err(open_result.unwrap_err()));
                             }
-
                             machine.open = Some(open_result.unwrap());
                         }
                         OP_SET => {
@@ -463,7 +469,11 @@ mod tests {
 /// much as it could be; patches welcome if more detailed errors
 /// would help you.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(Serialize, Deserialize),
+    serde(tag = "type", rename_all = "snake_case")
+)]
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[non_exhaustive]
 pub enum ScriptError {
@@ -475,7 +485,8 @@ pub enum ScriptError {
     /// invalid/malformed during OP_OPEN
     UnexpectedLabelCount,
     TooManyItems,
-    MultiOpen,
+    TooManyOpens,
+    Reject(RejectParams),
 }
 
 impl core::fmt::Display for ScriptError {
@@ -488,7 +499,8 @@ impl core::fmt::Display for ScriptError {
             ExpectedValidVarInt => f.write_str("expected a valid varint"),
             UnexpectedLabelCount => f.write_str("unexpected label count in space name"),
             TooManyItems => f.write_str("too many items"),
-            MultiOpen => f.write_str("multiple opens"),
+            TooManyOpens => f.write_str("multiple opens"),
+            Reject(_) => f.write_str("rejected"),
         }
     }
 }

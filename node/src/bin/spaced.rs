@@ -6,7 +6,7 @@ use log::error;
 use spaced::{
     config::{safe_exit, Args},
     rpc::{AsyncChainState, LoadedWallet, RpcServerImpl, WalletManager},
-    source::BitcoinBlockSource,
+    source::{BitcoinBlockSource, BitcoinRpc},
     store,
     sync::Spaced,
     wallets::RpcWallet,
@@ -82,6 +82,7 @@ impl Composer {
         };
 
         let (async_chain_state, async_chain_state_handle) = create_async_store(
+            spaced.rpc.clone(),
             spaced.chain.state.clone(),
             spaced.block_index.as_ref().map(|index| index.state.clone()),
             self.shutdown.subscribe(),
@@ -140,15 +141,16 @@ impl Composer {
 }
 
 async fn create_async_store(
+    rpc: BitcoinRpc,
     chain_state: LiveSnapshot,
     block_index: Option<LiveSnapshot>,
     shutdown: broadcast::Receiver<()>,
 ) -> (AsyncChainState, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel(32);
     let async_store = AsyncChainState::new(tx);
-
+    let client = reqwest::Client::new();
     let handle = tokio::spawn(async move {
-        AsyncChainState::handler(chain_state, block_index, rx, shutdown).await
+        AsyncChainState::handler(&client, rpc, chain_state, block_index, rx, shutdown).await
     });
     (async_store, handle)
 }

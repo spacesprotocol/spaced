@@ -10,7 +10,7 @@ use jsonrpsee::{
 };
 use protocol::{
     bitcoin::{Amount, FeeRate, OutPoint, Txid},
-    hasher::{KeyHasher, SpaceHash},
+    hasher::{KeyHasher, SpaceKey},
     opcodes::OP_SETALL,
     sname::{NameLike, SName},
     Covenant, FullSpaceOut,
@@ -372,7 +372,7 @@ async fn main() -> anyhow::Result<()> {
 fn space_hash(spaceish: &str) -> anyhow::Result<String> {
     let space = normalize_space(&spaceish);
     let sname = SName::from_str(&space)?;
-    let spacehash = SpaceHash::from(Sha256::hash(sname.to_bytes()));
+    let spacehash = SpaceKey::from(Sha256::hash(sname.to_bytes()));
     Ok(hex::encode(spacehash.as_slice()))
 }
 
@@ -394,7 +394,13 @@ async fn handle_commands(
 
                 if let Some(outpoint) = outpoint {
                     if let Some(spaceout) = cli.client.get_spaceout(outpoint).await? {
-                        spaceouts.push((priority, FullSpaceOut { outpoint, spaceout }));
+                        spaceouts.push((
+                            priority,
+                            FullSpaceOut {
+                                txid: outpoint.txid,
+                                spaceout,
+                            },
+                        ));
                     }
                 }
             }

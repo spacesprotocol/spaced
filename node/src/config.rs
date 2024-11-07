@@ -159,23 +159,41 @@ impl Args {
             bitcoin_rpc_auth,
         );
 
-        std::fs::create_dir_all(data_dir.clone())?;
+        fs::create_dir_all(data_dir.clone())?;
 
-        let chain_store = Store::open(data_dir.join("protocol.sdb"))?;
+        let proto_db_path = data_dir.join("protocol.sdb");
+        let initial_sync = !proto_db_path.exists();
+
+        let chain_store = Store::open(proto_db_path)?;
         let chain = LiveStore {
             state: chain_store.begin(&genesis)?,
             store: chain_store,
         };
 
-        let block_index = match args.block_index {
-            true => {
-                let block_store = Store::open(data_dir.join("blocks.sdb"))?;
-                Some(LiveStore {
-                    state: block_store.begin(&genesis).expect("begin block index"),
-                    store: block_store,
-                })
+        let block_index = if args.block_index {
+            let block_db_path = data_dir.join("block_index.sdb");
+            if !initial_sync && !block_db_path.exists() {
+                return Err(anyhow::anyhow!(
+                    "Block index must be enabled from the initial sync."
+                ));
             }
-            false => None,
+            let block_store = Store::open(block_db_path)?;
+            let index = LiveStore {
+                state: block_store.begin(&genesis).expect("begin block index"),
+                store: block_store,
+            };
+            {
+                let tip_1 = index.state.tip.read().expect("index");
+                let tip_2 = chain.state.tip.read().expect("tip");
+                if tip_1.height != tip_2.height || tip_1.hash != tip_2.hash {
+                    return Err(anyhow::anyhow!(
+                        "Protocol and block index states don't match."
+                    ));
+                }
+            }
+            Some(index)
+        } else {
+            None
         };
 
         Ok(Spaced {
