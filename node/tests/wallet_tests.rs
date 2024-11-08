@@ -32,7 +32,7 @@ async fn it_should_create_and_fund_wallet(rig: &TestRig) -> anyhow::Result<()> {
 
     let balance = rig.spaced.client.wallet_get_balance(name).await?;
     assert_eq!(
-        balance.confirmed.total,
+        balance.balance,
         Amount::from_sat(1000_000),
         "expected balance to match"
     );
@@ -56,7 +56,7 @@ async fn it_should_handle_simple_reorg(rig: &TestRig) -> anyhow::Result<()> {
 
     let balance = rig.spaced.client.wallet_get_balance(name).await?;
     assert_eq!(
-        balance.confirmed.total,
+        balance.balance,
         Amount::from_sat(0),
         "expected balance to match"
     );
@@ -67,7 +67,7 @@ async fn it_should_handle_simple_reorg(rig: &TestRig) -> anyhow::Result<()> {
 
     let balance = rig.spaced.client.wallet_get_balance(name).await?;
     assert_eq!(
-        balance.confirmed.total,
+        balance.balance,
         Amount::from_sat(1000_000),
         "expected balance to match"
     );

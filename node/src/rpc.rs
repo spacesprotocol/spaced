@@ -11,8 +11,7 @@ use bdk::{
         DerivableKey, ExtendedKey, GeneratableKey, GeneratedKey,
     },
     miniscript::Tap,
-    template::Bip84,
-    KeychainKind, LocalOutput,
+    KeychainKind,
 };
 use jsonrpsee::{core::async_trait, proc_macros::rpc, server::Server, types::ErrorObjectOwned};
 use log::info;
@@ -35,8 +34,8 @@ use tokio::{
     task::JoinSet,
 };
 use wallet::{
-    bdk_wallet as bdk, bitcoin::hashes::Hash, derivation::SpaceDerivation, DoubleUtxo,
-    SpacesWallet, WalletConfig, WalletExport, WalletInfo,
+    bdk_wallet as bdk, bdk_wallet::template::Bip86, bitcoin::hashes::Hash, export::WalletExport,
+    DoubleUtxo, SpacesWallet, WalletConfig, WalletDescriptors, WalletInfo,
 };
 
 use crate::{
@@ -44,7 +43,9 @@ use crate::{
     node::BlockMeta,
     source::BitcoinRpc,
     store::{ChainState, LiveSnapshot},
-    wallets::{AddressKind, JointBalance, RpcWallet, TxResponse, WalletCommand, WalletResponse},
+    wallets::{
+        AddressKind, Balance, RpcWallet, TxResponse, WalletCommand, WalletOutput, WalletResponse,
+    },
 };
 
 pub(crate) type Responder<T> = oneshot::Sender<T>;
@@ -129,13 +130,13 @@ pub trait Rpc {
     async fn wallet_load(&self, name: &str) -> Result<(), ErrorObjectOwned>;
 
     #[method(name = "walletimport")]
-    async fn wallet_import(&self, content: &str) -> Result<(), ErrorObjectOwned>;
+    async fn wallet_import(&self, wallet: WalletExport) -> Result<(), ErrorObjectOwned>;
 
     #[method(name = "walletgetinfo")]
     async fn wallet_get_info(&self, name: &str) -> Result<WalletInfo, ErrorObjectOwned>;
 
     #[method(name = "walletexport")]
-    async fn wallet_export(&self, name: &str) -> Result<String, ErrorObjectOwned>;
+    async fn wallet_export(&self, name: &str) -> Result<WalletExport, ErrorObjectOwned>;
 
     #[method(name = "walletcreate")]
     async fn wallet_create(&self, name: &str) -> Result<(), ErrorObjectOwned>;
@@ -164,11 +165,13 @@ pub trait Rpc {
 
     #[method(name = "walletlistspaces")]
     async fn wallet_list_spaces(&self, wallet: &str)
-        -> Result<Vec<FullSpaceOut>, ErrorObjectOwned>;
+        -> Result<Vec<WalletOutput>, ErrorObjectOwned>;
 
     #[method(name = "walletlistunspent")]
-    async fn wallet_list_unspent(&self, wallet: &str)
-        -> Result<Vec<LocalOutput>, ErrorObjectOwned>;
+    async fn wallet_list_unspent(
+        &self,
+        wallet: &str,
+    ) -> Result<Vec<WalletOutput>, ErrorObjectOwned>;
 
     #[method(name = "walletlistauctionoutputs")]
     async fn wallet_list_auction_outputs(
@@ -177,7 +180,7 @@ pub trait Rpc {
     ) -> Result<Vec<DoubleUtxo>, ErrorObjectOwned>;
 
     #[method(name = "walletgetbalance")]
-    async fn wallet_get_balance(&self, wallet: &str) -> Result<JointBalance, ErrorObjectOwned>;
+    async fn wallet_get_balance(&self, wallet: &str) -> Result<Balance, ErrorObjectOwned>;
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -283,10 +286,8 @@ impl WalletManager {
     pub async fn import_wallet(
         &self,
         client: &reqwest::Client,
-        content: &str,
+        wallet: WalletExport,
     ) -> anyhow::Result<()> {
-        let wallet = WalletExport::from_str(content)?;
-
         let wallet_path = self.data_dir.join(&wallet.label);
         if wallet_path.exists() {
             return Err(anyhow!(format!(
@@ -304,12 +305,14 @@ impl WalletManager {
         Ok(())
     }
 
-    pub async fn export_wallet(&self, name: &str) -> anyhow::Result<String> {
+    pub async fn export_wallet(&self, name: &str) -> anyhow::Result<WalletExport> {
         let wallet_dir = self.data_dir.join(name);
         if !wallet_dir.exists() {
             return Err(anyhow!("Wallet does not exist"));
         }
-        Ok(fs::read_to_string(wallet_dir.join("wallet.json"))?)
+        let wallet = fs::read_to_string(wallet_dir.join("wallet.json"))?;
+        let export: WalletExport = serde_json::from_str(&wallet)?;
+        Ok(export)
     }
 
     pub async fn create_wallet(&self, client: &reqwest::Client, name: &str) -> anyhow::Result<()> {
@@ -351,16 +354,10 @@ impl WalletManager {
         let (network, _) = self.fallback_network();
         let xpriv = Self::descriptor_from_mnemonic(network, &mnemonic.to_string())?;
 
-        let coins_descriptors = Self::default_coin_descriptors(xpriv);
-        let space_descriptors = Self::default_spaces_descriptors(xpriv);
-
-        let export = WalletExport::from_descriptors(
-            name,
-            start_block.height,
-            network,
-            coins_descriptors.0,
-            space_descriptors.0,
-        )?;
+        let (external, internal) = Self::default_descriptors(xpriv);
+        let tmp = bdk::wallet::Wallet::new_or_load(external, internal, None, network)?;
+        let export =
+            WalletExport::export_wallet(&tmp, &name, start_block.height).map_err(|e| anyhow!(e))?;
 
         Ok(export)
     }
@@ -403,54 +400,10 @@ impl WalletManager {
         (network, genesis_hash)
     }
 
-    // TODO: remove in the next update
-    pub async fn migrate_legacy_v0_0_1_wallet(
-        &self,
-        name: String,
-        wallet_dir: PathBuf,
-    ) -> anyhow::Result<bool> {
-        let legacy_secret = wallet_dir
-            .join("insecure_secret")
-            .to_str()
-            .unwrap()
-            .replace("/testnet/wallets/", "/test/wallets/");
-        let legacy_secret = std::path::PathBuf::from(legacy_secret);
-
-        if !legacy_secret.exists() {
-            return Ok(false);
-        }
-
-        let mnemonic = fs::read_to_string(legacy_secret)?.trim().to_string();
-        let start_block = match self.network {
-            ExtendedNetwork::Testnet => ChainAnchor::TESTNET(),
-            ExtendedNetwork::Testnet4 => ChainAnchor::TESTNET4(),
-            ExtendedNetwork::Regtest => ChainAnchor::REGTEST(),
-            _ => panic!("could not migrate legacy wallet: unsupported network"),
-        };
-
-        self.setup_new_wallet(
-            name,
-            mnemonic,
-            BlockId {
-                height: start_block.height,
-                hash: start_block.hash,
-            },
-        )?;
-
-        Ok(true)
-    }
-
     pub async fn load_wallet(&self, client: &reqwest::Client, name: &str) -> anyhow::Result<()> {
         let wallet_dir = self.data_dir.join(name);
         if !wallet_dir.exists() {
-            if self
-                .migrate_legacy_v0_0_1_wallet(name.to_string(), wallet_dir.clone())
-                .await?
-            {
-                info!("Migrated legacy wallet {}", name);
-            } else {
-                return Err(anyhow!("Wallet does not exist"));
-            }
+            return Err(anyhow!("Wallet does not exist"));
         }
 
         let file = fs::File::open(wallet_dir.join("wallet.json"))?;
@@ -459,20 +412,23 @@ impl WalletManager {
         let export: WalletExport = serde_json::from_reader(file)?;
 
         let mut wallet = SpacesWallet::new(WalletConfig {
-            start_block: export.block_height,
+            start_block: export.blockheight,
             data_dir: wallet_dir,
             name: name.to_string(),
             network,
             genesis_hash,
-            coins_descriptors: export.descriptors(),
-            space_descriptors: export.space_descriptors(),
+            space_descriptors: WalletDescriptors {
+                external: export.descriptor(),
+                internal: export
+                    .change_descriptor()
+                    .expect("expected a change descriptor"),
+            },
         })?;
 
-        let wallet_tip = wallet.coins.local_chain().tip().height();
+        let wallet_tip = wallet.spaces.local_chain().tip().height();
 
-        if wallet_tip < export.block_height {
-            let block_id = self.get_block_hash(client, export.block_height).await?;
-            wallet.coins.insert_checkpoint(block_id)?;
+        if wallet_tip < export.blockheight {
+            let block_id = self.get_block_hash(client, export.blockheight).await?;
             wallet.spaces.insert_checkpoint(block_id)?;
             wallet.commit()?;
         }
@@ -520,17 +476,10 @@ impl WalletManager {
         Ok(xkey.into_xprv(network).expect("xpriv"))
     }
 
-    fn default_coin_descriptors(x: Xpriv) -> (Bip84<Xpriv>, Bip84<Xpriv>) {
+    fn default_descriptors(x: Xpriv) -> (Bip86<Xpriv>, Bip86<Xpriv>) {
         (
-            Bip84(x, KeychainKind::External),
-            Bip84(x, KeychainKind::Internal),
-        )
-    }
-
-    fn default_spaces_descriptors(x: Xpriv) -> (SpaceDerivation<Xpriv>, SpaceDerivation<Xpriv>) {
-        (
-            SpaceDerivation(x, KeychainKind::External),
-            SpaceDerivation(x, KeychainKind::Internal),
+            Bip86(x, KeychainKind::External),
+            Bip86(x, KeychainKind::Internal),
         )
     }
 }
@@ -693,7 +642,7 @@ impl RpcServer for RpcServerImpl {
             })
     }
 
-    async fn wallet_import(&self, content: &str) -> Result<(), ErrorObjectOwned> {
+    async fn wallet_import(&self, content: WalletExport) -> Result<(), ErrorObjectOwned> {
         self.wallet_manager
             .import_wallet(&self.client, content)
             .await
@@ -710,7 +659,7 @@ impl RpcServer for RpcServerImpl {
             .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))
     }
 
-    async fn wallet_export(&self, name: &str) -> Result<String, ErrorObjectOwned> {
+    async fn wallet_export(&self, name: &str) -> Result<WalletExport, ErrorObjectOwned> {
         self.wallet_manager
             .export_wallet(name)
             .await
@@ -769,7 +718,7 @@ impl RpcServer for RpcServerImpl {
     async fn wallet_list_spaces(
         &self,
         wallet: &str,
-    ) -> Result<Vec<FullSpaceOut>, ErrorObjectOwned> {
+    ) -> Result<Vec<WalletOutput>, ErrorObjectOwned> {
         self.wallet(&wallet)
             .await?
             .send_list_spaces()
@@ -780,7 +729,7 @@ impl RpcServer for RpcServerImpl {
     async fn wallet_list_unspent(
         &self,
         wallet: &str,
-    ) -> Result<Vec<LocalOutput>, ErrorObjectOwned> {
+    ) -> Result<Vec<WalletOutput>, ErrorObjectOwned> {
         self.wallet(&wallet)
             .await?
             .send_list_unspent()
@@ -799,7 +748,7 @@ impl RpcServer for RpcServerImpl {
             .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))
     }
 
-    async fn wallet_get_balance(&self, wallet: &str) -> Result<JointBalance, ErrorObjectOwned> {
+    async fn wallet_get_balance(&self, wallet: &str) -> Result<Balance, ErrorObjectOwned> {
         self.wallet(&wallet)
             .await?
             .send_get_balance()
@@ -825,11 +774,10 @@ impl AsyncChainState {
             .await
             .map_err(|e| anyhow!("Could not retrieve tx ({})", e))?;
 
-        let block_hash = BlockHash::from_str(
-            info.get("blockhash")
-                .and_then(|t| t.as_str())
-                .ok_or_else(|| anyhow!("Could not retrieve block hash for tx (is it in the mempool?)"))?,
-        )?;
+        let block_hash =
+            BlockHash::from_str(info.get("blockhash").and_then(|t| t.as_str()).ok_or_else(
+                || anyhow!("Could not retrieve block hash for tx (is it in the mempool?)"),
+            )?)?;
         let block = Self::get_indexed_block(index, &block_hash, client, rpc, chain_state).await?;
 
         if let Some(block) = block {
