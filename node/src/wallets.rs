@@ -154,7 +154,8 @@ impl RpcWallet {
             balance,
             dust: unspent
                 .into_iter()
-                .filter(|output| output.is_spaceout)
+                .filter(|output| output.is_spaceout ||
+                    output.output.txout.value <= SpacesAwareCoinSelection::DUST_THRESHOLD)
                 .map(|output| output.output.txout.value)
                 .sum(),
         };
@@ -361,13 +362,17 @@ impl RpcWallet {
         wallet: &mut SpacesWallet,
         state: &mut LiveSnapshot,
     ) -> anyhow::Result<SpacesAwareCoinSelection> {
-        // exclude all space outs
+        // Filters out all "space outs" from the selection.
+        // Note: This exclusion only applies to confirmed space outs; unconfirmed ones are not excluded.
+        // In practice, this should be fine since Spaces coin selection skips dust by default,
+        // so explicitly excluding space outs may be redundant.
         let excluded = Self::list_unspent(wallet, state)?
             .into_iter()
             .filter(|out| out.is_spaceout)
             .map(|out| out.output.outpoint)
             .collect::<Vec<_>>();
-        Ok(SpacesAwareCoinSelection::new(Vec::new(), excluded))
+
+        Ok(SpacesAwareCoinSelection::new(excluded))
     }
 
     fn list_unspent(
@@ -437,6 +442,15 @@ impl RpcWallet {
         store: &mut LiveSnapshot,
         tx: RpcWalletTxBuilder,
     ) -> anyhow::Result<WalletResponse> {
+        if let Some(dust) = tx.dust {
+            if dust > SpacesAwareCoinSelection::DUST_THRESHOLD {
+                // Allowing higher dust may space outs to be accidentally
+                // spent during coin selection
+                return Err(anyhow!("dust cannot be higher than {}",
+                    SpacesAwareCoinSelection::DUST_THRESHOLD));
+            }
+        }
+
         let fee_rate = match tx.fee_rate.as_ref() {
             None => match Self::estimate_fee_rate(source) {
                 None => return Err(anyhow!("could not estimate fee rate")),

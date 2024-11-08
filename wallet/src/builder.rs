@@ -1,5 +1,4 @@
 use std::{
-    cell::RefCell,
     cmp::min,
     collections::BTreeMap,
     default::Default,
@@ -235,7 +234,7 @@ impl<'a, Cs: CoinSelectionAlgorithm> TxBuilderSpacesUtils<'a, Cs> for TxBuilder<
             placeholder.auction.outpoint.vout as u8,
             &offer,
         )?)
-        .expect("compressed psbt script bytes");
+            .expect("compressed psbt script bytes");
 
         let carrier = ScriptBuf::new_op_return(&compressed_psbt);
 
@@ -895,23 +894,25 @@ impl Builder {
     }
 }
 
-/// A coin selection algorithm that guarantees required utxos are ordered first
-/// appends any funding/change outputs to the end of the selected utxos
-/// also enables adding additional optional foreign utxos for funding
+/// A coin selection algorithm that :
+/// 1. Guarantees required utxos are ordered first appending
+/// any funding/change outputs to the end of the selected utxos.
+/// 2. Excludes all dust outputs to avoid accidentally spending space utxos
+/// 3. Enables adding additional output exclusions
 #[derive(Debug, Clone)]
 pub struct SpacesAwareCoinSelection {
     pub default_algorithm: DefaultCoinSelectionAlgorithm,
-    // Additional UTXOs to fund the transaction
-    pub other_optional_utxos: RefCell<Vec<WeightedUtxo>>,
     // Exclude outputs
     pub exclude_outputs: Vec<OutPoint>,
 }
 
 impl SpacesAwareCoinSelection {
-    pub fn new(optional_utxos: Vec<WeightedUtxo>, excluded: Vec<OutPoint>) -> Self {
+    // Will skip any outputs with value less than the dust threshold
+    // to avoid accidentally spending space outputs
+    pub const DUST_THRESHOLD: Amount = Amount::from_sat(1200);
+    pub fn new(excluded: Vec<OutPoint>) -> Self {
         Self {
             default_algorithm: DefaultCoinSelectionAlgorithm::default(),
-            other_optional_utxos: RefCell::new(optional_utxos),
             exclude_outputs: excluded,
         }
     }
@@ -931,12 +932,10 @@ impl CoinSelectionAlgorithm for SpacesAwareCoinSelection {
             .map(|w| w.utxo.clone())
             .collect::<Vec<_>>();
 
-        // Extend optional outputs
-        optional_utxos.extend(self.other_optional_utxos.borrow().iter().cloned());
-
-        // Filter out excluded outputs
+        // Filter out UTXOs that are either explicitly excluded or below the dust threshold
         optional_utxos.retain(|weighted_utxo| {
-            !self
+            weighted_utxo.utxo.txout().value > SpacesAwareCoinSelection::DUST_THRESHOLD
+                && !self
                 .exclude_outputs
                 .contains(&weighted_utxo.utxo.outpoint())
         });
@@ -952,9 +951,6 @@ impl CoinSelectionAlgorithm for SpacesAwareCoinSelection {
         let mut optional = Vec::with_capacity(result.selected.len() - required.len());
         for utxo in result.selected.drain(..) {
             if !required.iter().any(|u| u == &utxo) {
-                self.other_optional_utxos
-                    .borrow_mut()
-                    .retain(|x| x.utxo != utxo);
                 optional.push(utxo);
             }
         }
