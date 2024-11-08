@@ -106,9 +106,15 @@ pub enum AddressKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Balance {
+    pub balance: Amount,
+    pub details: BalanceDetails,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BalanceDetails {
     #[serde(flatten)]
     pub balance: bdk_wallet::wallet::Balance,
-    pub locked: Amount,
+    pub dust: Amount,
 }
 
 #[derive(Clone)]
@@ -144,13 +150,18 @@ impl RpcWallet {
         let unspent = Self::list_unspent(wallet, state)?;
         let balance = wallet.spaces.balance();
 
-        Ok(Balance {
+        let details = BalanceDetails {
             balance,
-            locked: unspent
+            dust: unspent
                 .into_iter()
                 .filter(|output| output.is_spaceout)
                 .map(|output| output.output.txout.value)
                 .sum(),
+        };
+
+        Ok(Balance {
+            balance: (details.balance.confirmed + details.balance.trusted_pending) - details.dust,
+            details,
         })
     }
 
