@@ -25,6 +25,7 @@ use spaced::{
     store::Sha256,
     wallets::AddressKind,
 };
+use wallet::export::WalletExport;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -443,11 +444,12 @@ async fn handle_commands(
         Commands::ImportWallet { path } => {
             let content =
                 fs::read_to_string(path).map_err(|e| ClientError::Custom(e.to_string()))?;
-            cli.client.wallet_import(&content).await?;
+            let wallet: WalletExport = serde_json::from_str(&content)?;
+            cli.client.wallet_import(wallet).await?;
         }
         Commands::ExportWallet { name } => {
             let result = cli.client.wallet_export(&name).await?;
-            println!("{}", result);
+            println!("{}", serde_json::to_string_pretty(&result).expect("result"));
         }
         Commands::GetWalletInfo { name } => {
             let result = cli.client.wallet_get_info(&name).await?;

@@ -10,7 +10,7 @@ use protocol::{
     hasher::{KeyHasher, SpaceKey},
     prepare::DataSource,
     sname::{NameLike, SName},
-    FullSpaceOut,
+    Space,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -20,13 +20,13 @@ use tokio::{
 };
 use wallet::{
     address::SpaceAddress,
+    bdk_wallet,
     bdk_wallet::{
-        bitcoin::psbt::Input,
         chain::{local_chain::CheckPoint, BlockId},
-        KeychainKind, LocalOutput, Utxo, WeightedUtxo,
+        KeychainKind, LocalOutput,
     },
     bitcoin,
-    bitcoin::{Address, Amount, FeeRate, Sequence},
+    bitcoin::{Address, Amount, FeeRate},
     builder::{
         CoinTransfer, SpaceTransfer, SpacesAwareCoinSelection, TransactionTag, TransferRequest,
     },
@@ -58,6 +58,14 @@ pub struct WalletResponse {
     pub raw: Option<Vec<String>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletOutput {
+    #[serde(flatten)]
+    pub output: LocalOutput,
+    pub space: Option<Space>,
+    pub is_spaceout: bool,
+}
+
 pub enum WalletCommand {
     GetInfo {
         resp: crate::rpc::Responder<anyhow::Result<WalletInfo>>,
@@ -76,16 +84,16 @@ pub enum WalletCommand {
         resp: crate::rpc::Responder<anyhow::Result<Vec<TxResponse>>>,
     },
     ListSpaces {
-        resp: crate::rpc::Responder<anyhow::Result<Vec<FullSpaceOut>>>,
+        resp: crate::rpc::Responder<anyhow::Result<Vec<WalletOutput>>>,
     },
     ListAuctionOutputs {
         resp: crate::rpc::Responder<anyhow::Result<Vec<DoubleUtxo>>>,
     },
     ListUnspent {
-        resp: crate::rpc::Responder<anyhow::Result<Vec<LocalOutput>>>,
+        resp: crate::rpc::Responder<anyhow::Result<Vec<WalletOutput>>>,
     },
     GetBalance {
-        resp: crate::rpc::Responder<anyhow::Result<JointBalance>>,
+        resp: crate::rpc::Responder<anyhow::Result<Balance>>,
     },
     UnloadWallet,
 }
@@ -97,23 +105,16 @@ pub enum AddressKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConfirmedBalance {
-    pub total: Amount,
-    pub spendable: Amount,
-    pub immature: Amount,
-    pub locked: Amount,
+pub struct Balance {
+    pub balance: Amount,
+    pub details: BalanceDetails,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UnconfirmedBalance {
-    pub total: Amount,
-    pub locked: Amount,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JointBalance {
-    pub confirmed: ConfirmedBalance,
-    pub unconfirmed: UnconfirmedBalance,
+pub struct BalanceDetails {
+    #[serde(flatten)]
+    pub balance: bdk_wallet::wallet::Balance,
+    pub dust: Amount,
 }
 
 #[derive(Clone)]
@@ -145,38 +146,23 @@ impl RpcWallet {
         None
     }
 
-    fn get_joint_balance(
-        state: &mut LiveSnapshot,
-        wallet: &mut SpacesWallet,
-    ) -> anyhow::Result<JointBalance> {
-        let (_, coinouts) = Self::get_space_outputs(wallet, state)?;
+    fn get_balance(state: &mut LiveSnapshot, wallet: &mut SpacesWallet) -> anyhow::Result<Balance> {
+        let unspent = Self::list_unspent(wallet, state)?;
+        let balance = wallet.spaces.balance();
 
-        let (spaces_confirmed, spaces_pending) = coinouts.iter().fold(
-            (Amount::from_sat(0), Amount::from_sat(0)),
-            |mut balances, utxo| {
-                if utxo.confirmation_time.is_confirmed() {
-                    balances.0 += utxo.txout.value;
-                } else {
-                    balances.1 += utxo.txout.value;
-                }
-                balances
-            },
-        );
+        let details = BalanceDetails {
+            balance,
+            dust: unspent
+                .into_iter()
+                .filter(|output| output.is_spaceout ||
+                    output.output.txout.value <= SpacesAwareCoinSelection::DUST_THRESHOLD)
+                .map(|output| output.output.txout.value)
+                .sum(),
+        };
 
-        let spaces = wallet.spaces.balance();
-        let coins = wallet.coins.balance();
-
-        Ok(JointBalance {
-            confirmed: ConfirmedBalance {
-                total: spaces_confirmed + spaces.immature + coins.confirmed + coins.immature,
-                spendable: spaces_confirmed + coins.confirmed,
-                immature: spaces.immature + coins.immature,
-                locked: spaces.confirmed - spaces_confirmed,
-            },
-            unconfirmed: UnconfirmedBalance {
-                total: spaces_pending + coins.trusted_pending + coins.untrusted_pending,
-                locked: (spaces.untrusted_pending + spaces.trusted_pending) - spaces_pending,
-            },
+        Ok(Balance {
+            balance: (details.balance.confirmed + details.balance.trusted_pending) - details.dust,
+            details,
         })
     }
 
@@ -186,7 +172,7 @@ impl RpcWallet {
         txid: Txid,
         fee_rate: FeeRate,
     ) -> anyhow::Result<Vec<TxResponse>> {
-        let mut builder = wallet.coins.build_fee_bump(txid)?;
+        let mut builder = wallet.spaces.build_fee_bump(txid)?;
         builder.fee_rate(fee_rate);
 
         let psbt = builder.finish()?;
@@ -227,7 +213,7 @@ impl RpcWallet {
             WalletCommand::GetNewAddress { kind, resp } => {
                 let address = match kind {
                     AddressKind::Coin => wallet
-                        .coins
+                        .spaces
                         .next_unused_address(KeychainKind::External)
                         .address
                         .to_string(),
@@ -236,27 +222,15 @@ impl RpcWallet {
                 _ = resp.send(Ok(address));
             }
             WalletCommand::ListUnspent { resp } => {
-                let mut all = Vec::new();
-                match Self::get_space_outputs(wallet, state) {
-                    Ok((_, mut coinouts)) => {
-                        all.append(&mut coinouts);
-                        for output in wallet.coins.list_unspent() {
-                            all.push(output);
-                        }
-                        _ = resp.send(Ok(all));
-                    }
-                    Err(error) => {
-                        _ = resp.send(Err(error));
-                    }
-                }
+                _ = resp.send(Self::list_unspent(wallet, state));
             }
             WalletCommand::ListSpaces { resp } => {
-                let result = Self::get_space_outputs(wallet, state);
+                let result = Self::list_unspent(wallet, state);
                 match result {
-                    Ok((spaceouts, _)) => {
-                        _ = resp.send(Ok(spaceouts
+                    Ok(unspent) => {
+                        _ = resp.send(Ok(unspent
                             .into_iter()
-                            .filter(|s| s.spaceout.space.is_some())
+                            .filter(|s| s.space.is_some())
                             .collect()));
                     }
                     Err(error) => {
@@ -269,7 +243,7 @@ impl RpcWallet {
                 _ = resp.send(result);
             }
             WalletCommand::GetBalance { resp } => {
-                let balance = Self::get_joint_balance(state, wallet);
+                let balance = Self::get_balance(state, wallet);
                 _ = resp.send(balance);
             }
             WalletCommand::UnloadWallet => {
@@ -291,7 +265,7 @@ impl RpcWallet {
         let (fetcher, receiver) = BlockFetcher::new(source.clone(), num_workers);
 
         let mut wallet_tip = {
-            let tip = wallet.coins.local_chain().tip();
+            let tip = wallet.spaces.local_chain().tip();
             ChainAnchor {
                 height: tip.height(),
                 hash: tip.hash(),
@@ -330,7 +304,7 @@ impl RpcWallet {
                     BlockEvent::Error(e) if matches!(e, BlockFetchError::BlockMismatch) => {
                         let mut checkpoint_in_chain = None;
                         let best_chain = source.get_best_chain()?;
-                        for cp in wallet.coins.local_chain().iter_checkpoints() {
+                        for cp in wallet.spaces.local_chain().iter_checkpoints() {
                             if cp.height() > best_chain.height {
                                 continue;
                             }
@@ -353,7 +327,6 @@ impl RpcWallet {
                                     hash,
                                 });
                                 wallet = wallet.rebuild()?;
-                                wallet.coins.insert_checkpoint(cp.block_id())?;
                                 wallet.spaces.insert_checkpoint(cp.block_id())?;
                                 cp
                             }
@@ -389,55 +362,40 @@ impl RpcWallet {
         wallet: &mut SpacesWallet,
         state: &mut LiveSnapshot,
     ) -> anyhow::Result<SpacesAwareCoinSelection> {
-        let weight = wallet
-            .spaces
-            .get_descriptor_for_keychain(KeychainKind::External)
-            .max_weight_to_satisfy()?;
-        let (_, cointouts) = Self::get_space_outputs(wallet, state)?;
-
-        let coinouts: Vec<_> = cointouts
+        // Filters out all "space outs" from the selection.
+        // Note: This exclusion only applies to confirmed space outs; unconfirmed ones are not excluded.
+        // In practice, this should be fine since Spaces coin selection skips dust by default,
+        // so explicitly excluding space outs may be redundant.
+        let excluded = Self::list_unspent(wallet, state)?
             .into_iter()
-            .filter(|x| x.confirmation_time.is_confirmed() && !x.is_spent)
-            .map(|coin| WeightedUtxo {
-                satisfaction_weight: weight.to_vbytes_floor() as usize,
-                utxo: Utxo::Foreign {
-                    outpoint: coin.outpoint,
-                    sequence: Some(Sequence::ENABLE_RBF_NO_LOCKTIME),
-                    psbt_input: Box::new(Input {
-                        witness_utxo: Some(coin.txout),
-                        ..Default::default()
-                    }),
-                },
-            })
-            .collect();
-        Ok(SpacesAwareCoinSelection::new(coinouts))
+            .filter(|out| out.is_spaceout)
+            .map(|out| out.output.outpoint)
+            .collect::<Vec<_>>();
+
+        Ok(SpacesAwareCoinSelection::new(excluded))
     }
 
-    /// Finds confirmed unspent outputs in the spaces wallet that could be spent for their coin value
-    fn get_space_outputs(
+    fn list_unspent(
         wallet: &mut SpacesWallet,
         store: &mut LiveSnapshot,
-    ) -> anyhow::Result<(Vec<FullSpaceOut>, Vec<LocalOutput>)> {
-        let available = wallet
-            .spaces
-            .list_output()
-            .filter(|x| x.keychain == KeychainKind::External && !x.is_spent);
-        let mut coinouts = Vec::new();
-        let mut spaceouts = Vec::new();
+    ) -> anyhow::Result<Vec<WalletOutput>> {
+        let mut wallet_outputs = Vec::new();
 
-        for output in available {
-            let result = store.get_spaceout(&output.outpoint)?;
-            match result {
-                None => {
-                    coinouts.push(output);
-                }
-                Some(spaceout) => spaceouts.push(FullSpaceOut {
-                    txid: output.outpoint.txid,
-                    spaceout,
-                }),
+        for output in wallet.spaces.list_unspent() {
+            let mut details = WalletOutput {
+                output,
+                space: None,
+                is_spaceout: false,
+            };
+
+            let result = store.get_spaceout(&details.output.outpoint)?;
+            if let Some(spaceout) = result {
+                details.is_spaceout = true;
+                details.space = spaceout.space;
             }
+            wallet_outputs.push(details)
         }
-        Ok((spaceouts, coinouts))
+        Ok(wallet_outputs)
     }
 
     fn resolve(
@@ -484,6 +442,15 @@ impl RpcWallet {
         store: &mut LiveSnapshot,
         tx: RpcWalletTxBuilder,
     ) -> anyhow::Result<WalletResponse> {
+        if let Some(dust) = tx.dust {
+            if dust > SpacesAwareCoinSelection::DUST_THRESHOLD {
+                // Allowing higher dust may space outs to be accidentally
+                // spent during coin selection
+                return Err(anyhow!("dust cannot be higher than {}",
+                    SpacesAwareCoinSelection::DUST_THRESHOLD));
+            }
+        }
+
         let fee_rate = match tx.fee_rate.as_ref() {
             None => match Self::estimate_fee_rate(source) {
                 None => return Err(anyhow!("could not estimate fee rate")),
@@ -822,7 +789,7 @@ impl RpcWallet {
         resp_rx.await?
     }
 
-    pub async fn send_list_spaces(&self) -> anyhow::Result<Vec<FullSpaceOut>> {
+    pub async fn send_list_spaces(&self) -> anyhow::Result<Vec<WalletOutput>> {
         let (resp, resp_rx) = oneshot::channel();
         self.sender.send(WalletCommand::ListSpaces { resp }).await?;
         resp_rx.await?
@@ -836,7 +803,7 @@ impl RpcWallet {
         resp_rx.await?
     }
 
-    pub async fn send_list_unspent(&self) -> anyhow::Result<Vec<LocalOutput>> {
+    pub async fn send_list_unspent(&self) -> anyhow::Result<Vec<WalletOutput>> {
         let (resp, resp_rx) = oneshot::channel();
         self.sender
             .send(WalletCommand::ListUnspent { resp })
@@ -844,7 +811,7 @@ impl RpcWallet {
         resp_rx.await?
     }
 
-    pub async fn send_get_balance(&self) -> anyhow::Result<JointBalance> {
+    pub async fn send_get_balance(&self) -> anyhow::Result<Balance> {
         let (resp, resp_rx) = oneshot::channel();
         self.sender.send(WalletCommand::GetBalance { resp }).await?;
         resp_rx.await?
