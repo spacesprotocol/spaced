@@ -54,6 +54,9 @@ pub struct TxResponse {
 pub struct TxInfo {
     pub txid: Txid,
     pub confirmed: bool,
+    pub sent: Amount,
+    pub received: Amount,
+    pub fee: Option<Amount>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -402,10 +405,19 @@ impl RpcWallet {
             .into_iter()
             .skip(skip)
             .take(count)
-            .map(|tx| {
-                let txid = tx.tx_node.txid.clone();
-                let confirmed = tx.chain_position.is_confirmed();
-                TxInfo { txid, confirmed }
+            .map(|ctx| {
+                let tx = ctx.tx_node.tx;
+                let txid = ctx.tx_node.txid.clone();
+                let confirmed = ctx.chain_position.is_confirmed();
+                let (sent, received) = wallet.spaces.sent_and_received(&tx);
+                let fee = wallet.spaces.calculate_fee(&tx).ok();
+                TxInfo {
+                    txid,
+                    confirmed,
+                    sent,
+                    received,
+                    fee,
+                }
             })
             .collect();
         Ok(transactions)

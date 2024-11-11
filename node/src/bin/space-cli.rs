@@ -210,7 +210,7 @@ enum Commands {
     /// List last transactions
     #[command(name = "listtransactions")]
     ListTransactions {
-        #[arg(default_value = "1")]
+        #[arg(default_value = "10")]
         count: usize,
         #[arg(default_value = "0")]
         skip: usize,
