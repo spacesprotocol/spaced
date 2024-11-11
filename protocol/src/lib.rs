@@ -117,41 +117,47 @@ pub enum Covenant {
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[cfg_attr(
     feature = "serde",
-    serde(rename_all = "snake_case", tag = "revoke_reason")
+    serde(rename_all = "snake_case", tag = "reason")
 )]
 pub enum RevokeReason {
-    BidPsbt(BidPsbtReason),
     /// Space was prematurely spent during the auctions phase
     PrematureClaim,
     /// Space output was spent either by spending it directly
     /// Space was transferred without following Input N => Output N+1 rule
     BadSpend,
     Expired,
+    #[cfg_attr(feature = "serde", serde(untagged))]
+    BidPsbt(BidPsbtReason)
 }
 
 #[derive(Copy, Clone, PartialEq, Debug, Eq)]
 #[cfg_attr(
     feature = "serde",
     derive(Serialize, Deserialize),
-    serde(rename_all = "snake_case")
+    serde(rename_all = "snake_case", tag="reason")
 )]
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 pub enum RejectReason {
     AlreadyExists,
-    BidPSBT(BidPsbtReason),
+    #[cfg_attr(feature = "serde", serde(untagged))]
+    BidPsbt(BidPsbtReason),
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(
     feature = "serde",
     derive(Serialize, Deserialize),
-    serde(rename_all = "snake_case", tag = "bid_psbt_reason")
+    serde(tag = "reason")
 )]
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 pub enum BidPsbtReason {
+    #[cfg_attr(feature = "serde", serde(rename = "bid_psbt_required"))]
     Required,
+    #[cfg_attr(feature = "serde", serde(rename = "bid_psbt_low_bid_amount"))]
     LowBidAmount,
+    #[cfg_attr(feature = "serde", serde(rename = "bid_psbt_bad_signature"))]
     BadSignature,
+    #[cfg_attr(feature = "serde", serde(rename = "bid_psbt_output_spent"))]
     OutputSpent,
 }
 
