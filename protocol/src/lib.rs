@@ -115,10 +115,7 @@ pub enum Covenant {
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
-#[cfg_attr(
-    feature = "serde",
-    serde(rename_all = "snake_case", tag = "revoke_reason")
-)]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum RevokeReason {
     BidPsbt(BidPsbtReason),
     /// Space was prematurely spent during the auctions phase
@@ -138,14 +135,14 @@ pub enum RevokeReason {
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 pub enum RejectReason {
     AlreadyExists,
-    BidPSBT(BidPsbtReason),
+    BidPsbt(BidPsbtReason),
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(
     feature = "serde",
     derive(Serialize, Deserialize),
-    serde(rename_all = "snake_case", tag = "bid_psbt_reason")
+    serde(rename_all = "snake_case")
 )]
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 pub enum BidPsbtReason {
