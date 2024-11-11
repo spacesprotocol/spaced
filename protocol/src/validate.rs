@@ -82,6 +82,8 @@ pub struct RevokeParams {
 pub struct RejectParams {
     #[cfg_attr(feature = "bincode", bincode(with_serde))]
     pub name: SName,
+
+    #[cfg_attr(feature = "serde", serde(flatten))]
     pub reason: RejectReason,
 }
 
@@ -338,7 +340,7 @@ impl Validator {
             None => {
                 let reject = ScriptError::Reject(RejectParams {
                     name,
-                    reason: RejectReason::BidPSBT(BidPsbtReason::Required),
+                    reason: RejectReason::BidPsbt(BidPsbtReason::Required),
                 });
 
                 changeset.spends[spend_index].script_error = Some(reject);
@@ -350,7 +352,7 @@ impl Validator {
         if auctiond.output.is_none() {
             let reject = ScriptError::Reject(RejectParams {
                 name,
-                reason: RejectReason::BidPSBT(BidPsbtReason::OutputSpent),
+                reason: RejectReason::BidPsbt(BidPsbtReason::OutputSpent),
             });
             changeset.spends[spend_index].script_error = Some(reject);
             return;
@@ -379,7 +381,7 @@ impl Validator {
         if !fullspaceout.verify_bid_sig() {
             let reject = ScriptError::Reject(RejectParams {
                 name: fullspaceout.spaceout.space.unwrap().name,
-                reason: RejectReason::BidPSBT(BidPsbtReason::BadSignature),
+                reason: RejectReason::BidPsbt(BidPsbtReason::BadSignature),
             });
             changeset.spends[spend_index].script_error = Some(reject);
             return;
