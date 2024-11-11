@@ -207,6 +207,14 @@ enum Commands {
         #[arg(long, short)]
         fee_rate: Option<u64>,
     },
+    /// List last transactions
+    #[command(name = "listtransactions")]
+    ListTransactions {
+        #[arg(default_value = "1")]
+        count: usize,
+        #[arg(default_value = "0")]
+        skip: usize,
+    },
     /// List won spaces including ones
     /// still in auction with a winning bid
     #[command(name = "listspaces")]
@@ -573,6 +581,13 @@ async fn handle_commands(
         Commands::ListAuctionOutputs => {
             let spaces = cli.client.wallet_list_auction_outputs(&cli.wallet).await?;
             println!("{}", serde_json::to_string_pretty(&spaces)?);
+        }
+        Commands::ListTransactions { count, skip } => {
+            let txs = cli
+                .client
+                .wallet_list_transactions(&cli.wallet, count, skip)
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&txs)?);
         }
         Commands::ListSpaces => {
             let spaces = cli.client.wallet_list_spaces(&cli.wallet).await?;

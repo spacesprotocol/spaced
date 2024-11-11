@@ -20,13 +20,12 @@ use tokio::{
 };
 use wallet::{
     address::SpaceAddress,
-    bdk_wallet,
     bdk_wallet::{
+        self,
         chain::{local_chain::CheckPoint, BlockId},
         KeychainKind, LocalOutput,
     },
-    bitcoin,
-    bitcoin::{Address, Amount, FeeRate},
+    bitcoin::{self, Address, Amount, FeeRate},
     builder::{
         CoinTransfer, SpaceTransfer, SpacesAwareCoinSelection, TransactionTag, TransferRequest,
     },
@@ -49,6 +48,12 @@ pub struct TxResponse {
     pub tags: Vec<TransactionTag>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TxInfo {
+    pub txid: Txid,
+    pub confirmed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +87,11 @@ pub enum WalletCommand {
         txid: Txid,
         fee_rate: FeeRate,
         resp: crate::rpc::Responder<anyhow::Result<Vec<TxResponse>>>,
+    },
+    ListTransactions {
+        count: usize,
+        skip: usize,
+        resp: crate::rpc::Responder<anyhow::Result<Vec<TxInfo>>>,
     },
     ListSpaces {
         resp: crate::rpc::Responder<anyhow::Result<Vec<WalletOutput>>>,
@@ -154,8 +164,10 @@ impl RpcWallet {
             balance,
             dust: unspent
                 .into_iter()
-                .filter(|output| output.is_spaceout ||
-                    output.output.txout.value <= SpacesAwareCoinSelection::DUST_THRESHOLD)
+                .filter(|output| {
+                    output.is_spaceout
+                        || output.output.txout.value <= SpacesAwareCoinSelection::DUST_THRESHOLD
+                })
                 .map(|output| output.output.txout.value)
                 .sum(),
         };
@@ -223,6 +235,10 @@ impl RpcWallet {
             }
             WalletCommand::ListUnspent { resp } => {
                 _ = resp.send(Self::list_unspent(wallet, state));
+            }
+            WalletCommand::ListTransactions { count, skip, resp } => {
+                let transactions = Self::list_transactions(wallet, count, skip);
+                _ = resp.send(transactions);
             }
             WalletCommand::ListSpaces { resp } => {
                 let result = Self::list_unspent(wallet, state);
@@ -375,6 +391,26 @@ impl RpcWallet {
         Ok(SpacesAwareCoinSelection::new(excluded))
     }
 
+    fn list_transactions(
+        wallet: &mut SpacesWallet,
+        count: usize,
+        skip: usize,
+    ) -> anyhow::Result<Vec<TxInfo>> {
+        let transactions = wallet
+            .spaces
+            .transactions()
+            .into_iter()
+            .skip(skip)
+            .take(count)
+            .map(|tx| {
+                let txid = tx.tx_node.txid.clone();
+                let confirmed = tx.chain_position.is_confirmed();
+                TxInfo { txid, confirmed }
+            })
+            .collect();
+        Ok(transactions)
+    }
+
     fn list_unspent(
         wallet: &mut SpacesWallet,
         store: &mut LiveSnapshot,
@@ -446,8 +482,10 @@ impl RpcWallet {
             if dust > SpacesAwareCoinSelection::DUST_THRESHOLD {
                 // Allowing higher dust may space outs to be accidentally
                 // spent during coin selection
-                return Err(anyhow!("dust cannot be higher than {}",
-                    SpacesAwareCoinSelection::DUST_THRESHOLD));
+                return Err(anyhow!(
+                    "dust cannot be higher than {}",
+                    SpacesAwareCoinSelection::DUST_THRESHOLD
+                ));
             }
         }
 
@@ -785,6 +823,18 @@ impl RpcWallet {
                 fee_rate,
                 resp,
             })
+            .await?;
+        resp_rx.await?
+    }
+
+    pub async fn send_list_transactions(
+        &self,
+        count: usize,
+        skip: usize,
+    ) -> anyhow::Result<Vec<TxInfo>> {
+        let (resp, resp_rx) = oneshot::channel();
+        self.sender
+            .send(WalletCommand::ListTransactions { count, skip, resp })
             .await?;
         resp_rx.await?
     }

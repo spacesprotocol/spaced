@@ -44,7 +44,8 @@ use crate::{
     source::BitcoinRpc,
     store::{ChainState, LiveSnapshot},
     wallets::{
-        AddressKind, Balance, RpcWallet, TxResponse, WalletCommand, WalletOutput, WalletResponse,
+        AddressKind, Balance, RpcWallet, TxInfo, TxResponse, WalletCommand, WalletOutput,
+        WalletResponse,
     },
 };
 
@@ -162,6 +163,14 @@ pub trait Rpc {
         txid: Txid,
         fee_rate: FeeRate,
     ) -> Result<Vec<TxResponse>, ErrorObjectOwned>;
+
+    #[method(name = "walletlisttransactions")]
+    async fn wallet_list_transactions(
+        &self,
+        wallet: &str,
+        count: usize,
+        skip: usize,
+    ) -> Result<Vec<TxInfo>, ErrorObjectOwned>;
 
     #[method(name = "walletlistspaces")]
     async fn wallet_list_spaces(&self, wallet: &str)
@@ -711,6 +720,19 @@ impl RpcServer for RpcServerImpl {
         self.wallet(&wallet)
             .await?
             .send_fee_bump(txid, fee_rate)
+            .await
+            .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))
+    }
+
+    async fn wallet_list_transactions(
+        &self,
+        wallet: &str,
+        count: usize,
+        skip: usize,
+    ) -> Result<Vec<TxInfo>, ErrorObjectOwned> {
+        self.wallet(&wallet)
+            .await?
+            .send_list_transactions(count, skip)
             .await
             .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))
     }
