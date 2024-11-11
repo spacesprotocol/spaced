@@ -82,6 +82,8 @@ pub struct RevokeParams {
 pub struct RejectParams {
     #[cfg_attr(feature = "bincode", bincode(with_serde))]
     pub name: SName,
+
+    #[cfg_attr(feature = "serde", serde(flatten))]
     pub reason: RejectReason,
 }
 
