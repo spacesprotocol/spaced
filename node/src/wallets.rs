@@ -399,17 +399,16 @@ impl RpcWallet {
         count: usize,
         skip: usize,
     ) -> anyhow::Result<Vec<TxInfo>> {
-        let transactions = wallet.spaces.transactions().into_iter().collect::<Vec<_>>();
+        let mut transactions: Vec<_> = wallet.spaces.transactions().collect();
+        transactions.sort();
 
-        let total = transactions.len();
-        let start = total.saturating_sub(skip + count);
-        let end = total.saturating_sub(skip);
-
-        let transactions = transactions[start..end]
+        Ok(transactions
             .iter()
             .rev()
+            .skip(skip)
+            .take(count)
             .map(|ctx| {
-                let tx = &ctx.tx_node.tx;
+                let tx = ctx.tx_node.tx.clone();
                 let txid = ctx.tx_node.txid.clone();
                 let confirmed = ctx.chain_position.is_confirmed();
                 let (sent, received) = wallet.spaces.sent_and_received(&tx);
@@ -422,8 +421,7 @@ impl RpcWallet {
                     fee,
                 }
             })
-            .collect();
-        Ok(transactions)
+            .collect())
     }
 
     fn list_unspent(
