@@ -10,7 +10,7 @@ use bitcoin::{
 use crate::{
     errors::Result,
     hasher::{KeyHasher, SpaceKey},
-    script::{ScriptMachine, ScriptResult},
+    script::{ScriptResult, SpaceScript},
     SpaceOut,
 };
 
@@ -30,7 +30,7 @@ pub struct TxContext {
 pub struct InputContext {
     pub n: usize,
     pub sstxo: SSTXO,
-    pub script: Option<ScriptResult<ScriptMachine>>,
+    pub script: Option<ScriptResult<SpaceScript>>,
 }
 
 /// Spent Spaces Transaction Output
@@ -112,7 +112,7 @@ impl TxContext {
 
             // Run any space scripts
             if let Some(script) = input.witness.tapscript() {
-                spacein.script = Some(ScriptMachine::execute::<T, H>(n, src, script)?);
+                spacein.script = SpaceScript::eval::<T, H>(src, script)?;
             }
             inputs.push(spacein)
         }

@@ -11,8 +11,7 @@ use jsonrpsee::{
 use protocol::{
     bitcoin::{Amount, FeeRate, OutPoint, Txid},
     hasher::{KeyHasher, SpaceKey},
-    opcodes::OP_SETALL,
-    sname::{NameLike, SName},
+    slabel::SLabel,
     Covenant, FullSpaceOut,
 };
 use serde::{Deserialize, Serialize};
@@ -372,8 +371,8 @@ async fn main() -> anyhow::Result<()> {
 
 fn space_hash(spaceish: &str) -> anyhow::Result<String> {
     let space = normalize_space(&spaceish);
-    let sname = SName::from_str(&space)?;
-    let spacehash = SpaceKey::from(Sha256::hash(sname.to_bytes()));
+    let sname = SLabel::from_str(&space)?;
+    let spacehash = SpaceKey::from(Sha256::hash(sname.as_ref()));
     Ok(hex::encode(spacehash.as_slice()))
 }
 
@@ -553,13 +552,13 @@ async fn handle_commands(
                     )))
                 }
             };
-            let builder = protocol::script::ScriptBuilder::new()
-                .push_slice(data.as_slice())
-                .push_opcode(OP_SETALL.into());
+
+            let space_script = protocol::script::SpaceScript::create_set(data.as_slice());
+
             cli.send_request(
                 Some(RpcWalletRequest::Execute(ExecuteParams {
                     context: vec![space],
-                    space_script: builder,
+                    space_script,
                 })),
                 None,
                 fee_rate,

@@ -67,18 +67,14 @@ impl ChainAnchor {
         )
     };
 
-    pub const MAINNET_ALPHA: fn() -> Self = || {
-        ChainAnchor {
-            hash: BlockHash::all_zeros(),
-            height: 869_000,
-        }
+    pub const MAINNET_ALPHA: fn() -> Self = || ChainAnchor {
+        hash: BlockHash::all_zeros(),
+        height: 869_000,
     };
 
-    pub const MAINNET: fn() -> Self = || {
-        ChainAnchor {
-            hash: BlockHash::all_zeros(),
-            height: 871_222,
-        }
+    pub const MAINNET: fn() -> Self = || ChainAnchor {
+        hash: BlockHash::all_zeros(),
+        height: 871_222,
     };
 
     // Testnet activation block
@@ -108,6 +104,8 @@ impl ChainAnchor {
 
 #[cfg(feature = "bincode")]
 pub mod bincode_impl {
+    use alloc::vec::Vec;
+
     use bincode::{
         config,
         de::Decoder,

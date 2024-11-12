@@ -3,12 +3,12 @@ use std::{net::SocketAddr, path::PathBuf, time::Duration};
 use anyhow::{anyhow, Context};
 use log::info;
 use protocol::{
-    bitcoin::{Block, BlockHash},
+    bitcoin::{hashes::Hash, Block, BlockHash},
     constants::ChainAnchor,
     hasher::BaseHash,
 };
 use tokio::sync::broadcast;
-use protocol::bitcoin::hashes::Hash;
+
 use crate::{
     config::ExtendedNetwork,
     node::{BlockMeta, BlockSource, Node},
@@ -190,8 +190,10 @@ impl Spaced {
         Ok(())
     }
 
-    pub async fn genesis(rpc : &BitcoinRpc, network: ExtendedNetwork) -> anyhow::Result<ChainAnchor> {
-
+    pub async fn genesis(
+        rpc: &BitcoinRpc,
+        network: ExtendedNetwork,
+    ) -> anyhow::Result<ChainAnchor> {
         let mut anchor = match network {
             ExtendedNetwork::Testnet => ChainAnchor::TESTNET(),
             ExtendedNetwork::Testnet4 => ChainAnchor::TESTNET4(),
@@ -204,11 +206,17 @@ impl Spaced {
         if anchor.hash == BlockHash::all_zeros() {
             let client = reqwest::Client::new();
 
-            anchor.hash  = match rpc.send_json(&client, &rpc.get_block_hash(anchor.height)).await {
+            anchor.hash = match rpc
+                .send_json(&client, &rpc.get_block_hash(anchor.height))
+                .await
+            {
                 Ok(hash) => hash,
                 Err(e) => {
-                    return Err(anyhow!("Could not retrieve activation block at height {}: {}",
-                        anchor.height, e));
+                    return Err(anyhow!(
+                        "Could not retrieve activation block at height {}: {}",
+                        anchor.height,
+                        e
+                    ));
                 }
             }
         }

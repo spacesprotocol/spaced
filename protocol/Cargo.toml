@@ -8,11 +8,12 @@ bitcoin = { version = "0.32.2", features = ["base64", "serde"], default-features
 log = "0.4.14"
 
 ## optional features
-bincode = { version = "2.0.0-rc.3", features = [ "derive", "serde" ], default-features = false, optional = true }
+bincode = { version = "2.0.0-rc.3", features = [ "derive", "serde", "alloc" ], default-features = false, optional = true }
 serde = { version = "^1.0", features = ["derive"], default-features = false, optional = true }
 
 [dev-dependencies]
 rand = "0.8.5"
+serde_json = "1.0.132"
 
 [features]
 default = []

@@ -9,7 +9,8 @@ use protocol::{
     constants::ChainAnchor,
     hasher::{KeyHasher, SpaceKey},
     prepare::DataSource,
-    sname::{NameLike, SName},
+    script::SpaceScript,
+    slabel::SLabel,
     Space,
 };
 use serde::{Deserialize, Serialize};
@@ -154,8 +155,11 @@ impl RpcWallet {
             balance,
             dust: unspent
                 .into_iter()
-                .filter(|output| output.is_spaceout ||
-                    output.output.txout.value <= SpacesAwareCoinSelection::DUST_THRESHOLD)
+                .filter(|output|
+                    (output.is_spaceout || output.output.txout.value <= SpacesAwareCoinSelection::DUST_THRESHOLD) &&
+                        // trusted pending only
+                        (output.output.confirmation_time.is_confirmed() || output.output.keychain == KeychainKind::Internal)
+                )
                 .map(|output| output.output.txout.value)
                 .sum(),
         };
@@ -414,7 +418,7 @@ impl RpcWallet {
             return Ok(Some(space_address.0));
         }
 
-        let sname = match SName::from_str(to) {
+        let sname = match SLabel::from_str(to) {
             Ok(sname) => sname,
             Err(_) => {
                 return Err(anyhow!(
@@ -423,7 +427,7 @@ impl RpcWallet {
             }
         };
 
-        let spacehash = SpaceKey::from(Sha256::hash(sname.to_bytes()));
+        let spacehash = SpaceKey::from(Sha256::hash(sname.as_ref()));
         let script_pubkey = match store.get_space_info(&spacehash)? {
             None => return Ok(None),
             Some(fullspaceout) => fullspaceout.spaceout.script_pubkey,
@@ -446,8 +450,10 @@ impl RpcWallet {
             if dust > SpacesAwareCoinSelection::DUST_THRESHOLD {
                 // Allowing higher dust may space outs to be accidentally
                 // spent during coin selection
-                return Err(anyhow!("dust cannot be higher than {}",
-                    SpacesAwareCoinSelection::DUST_THRESHOLD));
+                return Err(anyhow!(
+                    "dust cannot be higher than {}",
+                    SpacesAwareCoinSelection::DUST_THRESHOLD
+                ));
             }
         }
 
@@ -486,7 +492,7 @@ impl RpcWallet {
                     let spaces: Vec<_> = params
                         .spaces
                         .iter()
-                        .filter_map(|space| SName::from_str(space).ok())
+                        .filter_map(|space| SLabel::from_str(space).ok())
                         .collect();
                     if spaces.len() != params.spaces.len() {
                         return Err(anyhow!("sendspaces: some names were malformed"));
@@ -498,7 +504,7 @@ impl RpcWallet {
                         Some(r) => r,
                     };
                     for space in spaces {
-                        let spacehash = SpaceKey::from(Sha256::hash(space.to_bytes()));
+                        let spacehash = SpaceKey::from(Sha256::hash(space.as_ref()));
                         match store.get_space_info(&spacehash)? {
                             None => return Err(anyhow!("sendspaces: you don't own `{}`", space)),
                             Some(full)
@@ -521,10 +527,10 @@ impl RpcWallet {
                     }
                 }
                 RpcWalletRequest::Open(params) => {
-                    let name = SName::from_str(&params.name)?;
+                    let name = SLabel::from_str(&params.name)?;
                     if !tx.force {
                         // Warn if already exists
-                        let spacehash = SpaceKey::from(Sha256::hash(name.to_bytes()));
+                        let spacehash = SpaceKey::from(Sha256::hash(name.as_ref()));
                         let spaceout = store.get_space_info(&spacehash)?;
                         if spaceout.is_some() {
                             return Err(anyhow!("open '{}': space already exists", params.name));
@@ -534,8 +540,8 @@ impl RpcWallet {
                     builder = builder.add_open(&params.name, Amount::from_sat(params.amount));
                 }
                 RpcWalletRequest::Bid(params) => {
-                    let name = SName::from_str(&params.name)?;
-                    let spacehash = SpaceKey::from(Sha256::hash(name.to_bytes()));
+                    let name = SLabel::from_str(&params.name)?;
+                    let spacehash = SpaceKey::from(Sha256::hash(name.as_ref()));
                     let spaceout = store.get_space_info(&spacehash)?;
                     if spaceout.is_none() {
                         return Err(anyhow!("bid '{}': space does not exist", params.name));
@@ -543,8 +549,8 @@ impl RpcWallet {
                     builder = builder.add_bid(spaceout.unwrap(), Amount::from_sat(params.amount));
                 }
                 RpcWalletRequest::Register(params) => {
-                    let name = SName::from_str(&params.name)?;
-                    let spacehash = SpaceKey::from(Sha256::hash(name.to_bytes()));
+                    let name = SLabel::from_str(&params.name)?;
+                    let spacehash = SpaceKey::from(Sha256::hash(name.as_ref()));
                     let spaceout = store.get_space_info(&spacehash)?;
                     if spaceout.is_none() {
                         return Err(anyhow!("register '{}': space does not exist", params.name));
@@ -596,8 +602,8 @@ impl RpcWallet {
                 RpcWalletRequest::Execute(params) => {
                     let mut spaces = Vec::new();
                     for space in params.context.iter() {
-                        let name = SName::from_str(&space)?;
-                        let spacehash = SpaceKey::from(Sha256::hash(name.to_bytes()));
+                        let name = SLabel::from_str(&space)?;
+                        let spacehash = SpaceKey::from(Sha256::hash(name.as_ref()));
                         let spaceout = store.get_space_info(&spacehash)?;
                         if spaceout.is_none() {
                             return Err(anyhow!("execute on '{}': space does not exist", space));
@@ -615,7 +621,9 @@ impl RpcWallet {
                             recipient: address.0,
                         });
                     }
-                    builder = builder.add_execute(spaces, params.space_script);
+
+                    let script = SpaceScript::nop_script(params.space_script);
+                    builder = builder.add_execute(spaces, script);
                 }
             }
         }

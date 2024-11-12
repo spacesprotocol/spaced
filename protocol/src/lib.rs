@@ -22,16 +22,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     constants::{BID_PSBT_INPUT_SEQUENCE, BID_PSBT_TX_LOCK_TIME, BID_PSBT_TX_VERSION},
-    sname::SName,
+    slabel::SLabel,
 };
 
 pub mod constants;
 pub mod errors;
 pub mod hasher;
-pub mod opcodes;
 pub mod prepare;
 pub mod script;
-pub mod sname;
+pub mod slabel;
 pub mod validate;
 
 #[derive(Clone, PartialEq, Debug)]
@@ -70,8 +69,7 @@ pub struct Space {
     /// The target is the Space name if a spend does not follow
     /// protocol rules the target space will be disassociated from future
     /// spends
-    #[cfg_attr(feature = "bincode", bincode(with_serde))]
-    pub name: SName,
+    pub name: SLabel,
     // Space specific spending conditions
     pub covenant: Covenant,
 }
@@ -115,10 +113,7 @@ pub enum Covenant {
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
-#[cfg_attr(
-    feature = "serde",
-    serde(rename_all = "snake_case", tag = "reason")
-)]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case", tag = "reason"))]
 pub enum RevokeReason {
     /// Space was prematurely spent during the auctions phase
     PrematureClaim,
@@ -127,14 +122,14 @@ pub enum RevokeReason {
     BadSpend,
     Expired,
     #[cfg_attr(feature = "serde", serde(untagged))]
-    BidPsbt(BidPsbtReason)
+    BidPsbt(BidPsbtReason),
 }
 
 #[derive(Copy, Clone, PartialEq, Debug, Eq)]
 #[cfg_attr(
     feature = "serde",
     derive(Serialize, Deserialize),
-    serde(rename_all = "snake_case", tag="reason")
+    serde(rename_all = "snake_case", tag = "reason")
 )]
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 pub enum RejectReason {

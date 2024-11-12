@@ -129,7 +129,8 @@ impl Args {
         let data_dir = match args.data_dir {
             None => default_dirs.data_dir().to_path_buf(),
             Some(data_dir) => data_dir,
-        }.join(args.chain.to_string());
+        }
+        .join(args.chain.to_string());
 
         let default_port = args.rpc_port.unwrap();
         let rpc_bind_addresses: Vec<SocketAddr> = args
@@ -144,7 +145,6 @@ impl Args {
                     .ok()
             })
             .collect();
-
 
         let bitcoin_rpc_auth = if let Some(cookie) = args.bitcoin_rpc_cookie {
             let cookie = std::fs::read_to_string(cookie)?;

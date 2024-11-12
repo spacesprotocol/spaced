@@ -17,15 +17,13 @@ use bdk_wallet::{
     KeychainKind, TxBuilder, WeightedUtxo,
 };
 use bitcoin::{
-    absolute::LockTime, psbt, psbt::Input, script::PushBytesBuf, Address, Amount, FeeRate, Network,
-    OutPoint, Psbt, Script, ScriptBuf, Sequence, Transaction, TxOut, Txid, Witness,
+    absolute::LockTime, psbt, psbt::Input, script, script::PushBytesBuf, Address, Amount, FeeRate,
+    Network, OutPoint, Psbt, Script, ScriptBuf, Sequence, Transaction, TxOut, Txid, Witness,
 };
 use protocol::{
     bitcoin::absolute::Height,
     constants::{BID_PSBT_INPUT_SEQUENCE, BID_PSBT_TX_VERSION},
-    opcodes::OP_OPEN,
-    script::ScriptBuilder,
-    sname::NameLike,
+    script::SpaceScript,
     Covenant, FullSpaceOut, Space,
 };
 use serde::{Deserialize, Serialize};
@@ -131,7 +129,7 @@ pub struct CoinTransfer {
 #[derive(Debug, Clone)]
 pub struct ExecuteRequest {
     pub context: Vec<SpaceTransfer>,
-    pub script: ScriptBuilder,
+    pub script: script::Builder,
 }
 
 pub struct CreateParams {
@@ -234,7 +232,7 @@ impl<'a, Cs: CoinSelectionAlgorithm> TxBuilderSpacesUtils<'a, Cs> for TxBuilder<
             placeholder.auction.outpoint.vout as u8,
             &offer,
         )?)
-            .expect("compressed psbt script bytes");
+        .expect("compressed psbt script bytes");
 
         let carrier = ScriptBuf::new_op_return(&compressed_psbt);
 
@@ -478,10 +476,8 @@ impl Iterator for BuilderIterator<'_> {
 
                 let mut contexts = Vec::with_capacity(params.executes.len());
                 for execute in params.executes {
-                    let signing_info = SpaceScriptSigningInfo::new(
-                        self.wallet.config.network,
-                        execute.script.to_nop_script(),
-                    );
+                    let signing_info =
+                        SpaceScriptSigningInfo::new(self.wallet.config.network, execute.script);
                     if signing_info.is_err() {
                         return Some(Err(signing_info.unwrap_err()));
                     }
@@ -654,7 +650,11 @@ impl Builder {
         self
     }
 
-    pub fn add_execute(mut self, spaces: Vec<SpaceTransfer>, space_script: ScriptBuilder) -> Self {
+    pub fn add_execute(
+        mut self,
+        spaces: Vec<SpaceTransfer>,
+        space_script: script::Builder,
+    ) -> Self {
         self.requests.push(StackRequest::Execute(ExecuteRequest {
             context: spaces,
             script: space_script,
@@ -882,15 +882,9 @@ impl Builder {
         network: Network,
         name: &str,
     ) -> anyhow::Result<SpaceScriptSigningInfo> {
-        let space_builder = ScriptBuilder::new();
-        let sname = protocol::sname::SName::from_str(name).expect("valid space name");
-
-        let builder = space_builder
-            .push_slice(sname.to_bytes())
-            .push_opcode(OP_OPEN.into())
-            .to_nop_script();
-
-        SpaceScriptSigningInfo::new(network, builder)
+        let sname = protocol::slabel::SLabel::from_str(name).expect("valid space name");
+        let nop = SpaceScript::nop_script(SpaceScript::create_open(sname));
+        SpaceScriptSigningInfo::new(network, nop)
     }
 }
 
@@ -936,8 +930,8 @@ impl CoinSelectionAlgorithm for SpacesAwareCoinSelection {
         optional_utxos.retain(|weighted_utxo| {
             weighted_utxo.utxo.txout().value > SpacesAwareCoinSelection::DUST_THRESHOLD
                 && !self
-                .exclude_outputs
-                .contains(&weighted_utxo.utxo.outpoint())
+                    .exclude_outputs
+                    .contains(&weighted_utxo.utxo.outpoint())
         });
 
         let mut result = self.default_algorithm.coin_select(

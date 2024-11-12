@@ -10,7 +10,6 @@ use protocol::{
     constants::{ChainAnchor, ROLLOUT_BATCH_SIZE, ROLLOUT_BLOCK_INTERVAL},
     hasher::{BidKey, KeyHasher, OutpointKey, SpaceKey},
     prepare::TxContext,
-    sname::NameLike,
     validate::{TxChangeSet, UpdateKind, Validator},
     Covenant, FullSpaceOut, RevokeReason, SpaceOut,
 };
@@ -149,7 +148,7 @@ impl Node {
 
             // Space => Outpoint
             if let Some(space) = create.space.as_ref() {
-                let space_key = SpaceKey::from(Sha256::hash(space.name.to_bytes()));
+                let space_key = SpaceKey::from(Sha256::hash(space.name.as_ref()));
                 state.insert_space(space_key, outpoint.into());
             }
             // Outpoint => SpaceOut
@@ -168,7 +167,7 @@ impl Node {
                             // Since these are caused by spends
                             // Outpoint -> Spaceout mapping is already removed,
                             let space = update.output.spaceout.space.unwrap();
-                            let base_hash = Sha256::hash(space.name.to_bytes());
+                            let base_hash = Sha256::hash(space.name.as_ref());
 
                             // Remove Space -> Outpoint
                             let space_key = SpaceKey::from(base_hash);
@@ -209,7 +208,7 @@ impl Node {
                             .as_ref()
                             .expect("a space in rollout")
                             .name
-                            .to_bytes(),
+                            .as_ref(),
                     );
                     let bid_key = BidKey::from_bid(rollout.priority, base_hash);
 
@@ -229,7 +228,7 @@ impl Node {
                             .as_ref()
                             .expect("space")
                             .name
-                            .to_bytes(),
+                            .as_ref(),
                     );
 
                     let (bid_value, previous_bid) = unwrap_bid_value(&update.output.spaceout);

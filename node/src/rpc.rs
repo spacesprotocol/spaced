@@ -225,7 +225,7 @@ pub struct SendCoinsParams {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ExecuteParams {
     pub context: Vec<String>,
-    pub space_script: protocol::script::ScriptBuilder,
+    pub space_script: Vec<u8>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
