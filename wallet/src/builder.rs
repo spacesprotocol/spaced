@@ -279,6 +279,15 @@ impl<'a, Cs: CoinSelectionAlgorithm> TxBuilderSpacesUtils<'a, Cs> for TxBuilder<
     fn add_transfer(&mut self, request: TransferRequest) -> anyhow::Result<&mut Self> {
         match request {
             TransferRequest::Space(request) => {
+                let output_value = space_dust(
+                    request
+                        .space
+                        .spaceout
+                        .script_pubkey
+                        .minimal_non_dust()
+                        .mul(2),
+                );
+
                 let mut spend_input = psbt::Input {
                     witness_utxo: Some(TxOut {
                         value: request.space.spaceout.value,
@@ -300,9 +309,13 @@ impl<'a, Cs: CoinSelectionAlgorithm> TxBuilderSpacesUtils<'a, Cs> for TxBuilder<
                     spend_input,
                     66,
                 )?;
+
                 self.add_recipient(
                     request.recipient.script_pubkey(),
-                    request.space.spaceout.value,
+                    // TODO: another reason we need to keep more metadata
+                    // we use a special dust value here so that list auction
+                    // outputs won't accidentally auction off this output
+                    output_value,
                 );
             }
             TransferRequest::Coin(request) => {
@@ -347,9 +360,10 @@ impl Builder {
                     None => addr1.minimal_non_dust().mul(2),
                     Some(dust) => dust,
                 };
+                let connector_dust = connector_dust(dust);
                 let magic_dust = magic_dust(dust);
-                placeholder_outputs.push((addr1, dust));
-                // auctioned output
+
+                placeholder_outputs.push((addr1, connector_dust));
                 let addr2 = w.spaces.next_unused_address(KeychainKind::External);
                 placeholder_outputs.push((addr2.script_pubkey(), magic_dust));
             }
@@ -437,6 +451,7 @@ pub enum TransactionTag {
     Open,
     Bid,
     Script,
+    ForceSpendTestOnly,
 }
 
 impl Iterator for BuilderIterator<'_> {
@@ -971,3 +986,24 @@ pub fn magic_dust(amount: Amount) -> Amount {
     let amount = amount.to_sat();
     Amount::from_sat(amount - (amount % 10) + 2)
 }
+
+pub fn connector_dust(amount: Amount) -> Amount {
+    let amount = amount.to_sat();
+    Amount::from_sat(amount - (amount % 10) + 4)
+}
+
+pub fn is_connector_dust(amount: Amount) -> bool {
+    amount.to_sat() % 10 == 4
+}
+
+// Special dust value to indicate this output is a space
+// could be removed once we track output metadata in some db
+pub fn space_dust(amount: Amount) -> Amount {
+    let amount = amount.to_sat();
+    Amount::from_sat(amount - (amount % 10) + 6)
+}
+
+pub fn is_space_dust(amount: Amount) -> bool {
+    amount.to_sat() % 10 == 6
+}
+

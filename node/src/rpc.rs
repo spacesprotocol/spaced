@@ -24,7 +24,6 @@ use protocol::{
     constants::ChainAnchor,
     hasher::{BaseHash, SpaceKey},
     prepare::DataSource,
-    validate::TxChangeSet,
     FullSpaceOut, SpaceOut,
 };
 use serde::{Deserialize, Serialize};
@@ -40,7 +39,7 @@ use wallet::{
 
 use crate::{
     config::ExtendedNetwork,
-    node::BlockMeta,
+    node::{BlockMeta, TxEntry},
     source::BitcoinRpc,
     store::{ChainState, LiveSnapshot},
     wallets::{
@@ -75,7 +74,7 @@ pub enum ChainStateCommand {
     },
     GetTxMeta {
         txid: Txid,
-        resp: Responder<anyhow::Result<Option<TxChangeSet>>>,
+        resp: Responder<anyhow::Result<Option<TxEntry>>>,
     },
     GetBlockMeta {
         block_hash: BlockHash,
@@ -124,7 +123,7 @@ pub trait Rpc {
     ) -> Result<Option<BlockMeta>, ErrorObjectOwned>;
 
     #[method(name = "gettxmeta")]
-    async fn get_tx_meta(&self, txid: Txid) -> Result<Option<TxChangeSet>, ErrorObjectOwned>;
+    async fn get_tx_meta(&self, txid: Txid) -> Result<Option<TxEntry>, ErrorObjectOwned>;
 
     #[method(name = "walletload")]
     async fn wallet_load(&self, name: &str) -> Result<(), ErrorObjectOwned>;
@@ -162,6 +161,14 @@ pub trait Rpc {
         txid: Txid,
         fee_rate: FeeRate,
     ) -> Result<Vec<TxResponse>, ErrorObjectOwned>;
+
+    #[method(name = "walletforcespend")]
+    async fn wallet_force_spend(
+        &self,
+        wallet: &str,
+        outpoint: OutPoint,
+        fee_rate: FeeRate,
+    ) -> Result<TxResponse, ErrorObjectOwned>;
 
     #[method(name = "walletlistspaces")]
     async fn wallet_list_spaces(&self, wallet: &str)
@@ -624,7 +631,7 @@ impl RpcServer for RpcServerImpl {
         Ok(data)
     }
 
-    async fn get_tx_meta(&self, txid: Txid) -> Result<Option<TxChangeSet>, ErrorObjectOwned> {
+    async fn get_tx_meta(&self, txid: Txid) -> Result<Option<TxEntry>, ErrorObjectOwned> {
         let data = self
             .store
             .get_tx_meta(txid)
@@ -715,6 +722,19 @@ impl RpcServer for RpcServerImpl {
             .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))
     }
 
+    async fn wallet_force_spend(
+        &self,
+        wallet: &str,
+        outpoint: OutPoint,
+        fee_rate: FeeRate,
+    ) -> Result<TxResponse, ErrorObjectOwned> {
+        self.wallet(&wallet)
+            .await?
+            .send_force_spend(outpoint, fee_rate)
+            .await
+            .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))
+    }
+
     async fn wallet_list_spaces(
         &self,
         wallet: &str,
@@ -768,7 +788,7 @@ impl AsyncChainState {
         client: &reqwest::Client,
         rpc: &BitcoinRpc,
         chain_state: &mut LiveSnapshot,
-    ) -> Result<Option<TxChangeSet>, anyhow::Error> {
+    ) -> Result<Option<TxEntry>, anyhow::Error> {
         let info: serde_json::Value = rpc
             .send_json(client, &rpc.get_raw_transaction(&txid, true))
             .await
@@ -781,7 +801,10 @@ impl AsyncChainState {
         let block = Self::get_indexed_block(index, &block_hash, client, rpc, chain_state).await?;
 
         if let Some(block) = block {
-            return Ok(block.tx_meta.into_iter().find(|tx| &tx.txid == txid));
+            return Ok(block
+                .tx_meta
+                .into_iter()
+                .find(|tx| &tx.changeset.txid == txid));
         }
         Ok(None)
     }
@@ -951,7 +974,7 @@ impl AsyncChainState {
         resp_rx.await?
     }
 
-    pub async fn get_tx_meta(&self, txid: Txid) -> anyhow::Result<Option<TxChangeSet>> {
+    pub async fn get_tx_meta(&self, txid: Txid) -> anyhow::Result<Option<TxEntry>> {
         let (resp, resp_rx) = oneshot::channel();
         self.sender
             .send(ChainStateCommand::GetTxMeta { txid, resp })

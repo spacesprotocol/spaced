@@ -188,6 +188,10 @@ pub fn is_magic_lock_time(lock_time: &LockTime) -> bool {
 
 impl TrackableOutput for TxOut {
     fn is_magic_output(&self) -> bool {
-        self.value.to_sat() % 10 == 2
+        is_magic_amount(self.value)
     }
+}
+
+pub fn is_magic_amount(amount: Amount) -> bool {
+    amount.to_sat() % 10 == 2
 }

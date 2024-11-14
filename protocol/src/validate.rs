@@ -11,7 +11,7 @@ use crate::{
     prepare::{AuctionedOutput, TrackableOutput, TxContext, SSTXO},
     script::{OpenHistory, ScriptError, SpaceScript},
     slabel::SLabel,
-    BidPsbtReason, Covenant, FullSpaceOut, RejectReason, RevokeReason, Space, SpaceOut,
+    BidPsbtReason, Bytes, Covenant, FullSpaceOut, RejectReason, RevokeReason, Space, SpaceOut,
 };
 
 #[derive(Debug, Clone)]
@@ -113,7 +113,7 @@ impl Validator {
             updates: vec![],
         };
 
-        let mut space_data = Vec::new();
+        let mut space_data = Bytes::new(Vec::new());
         let mut reserve = false;
 
         for input_ctx in ctx.inputs.into_iter() {
@@ -146,7 +146,7 @@ impl Validator {
                             );
                         }
                         SpaceScript::Set(data) => {
-                            space_data = data;
+                            space_data = Bytes::new(data);
                         }
                         SpaceScript::Reserve => {
                             reserve = true;
@@ -378,13 +378,23 @@ impl Validator {
             if spaceout.space.is_none() {
                 return;
             }
-            changeset.updates.push(UpdateOut {
+
+            let revoke = UpdateOut {
                 output: FullSpaceOut {
                     txid: auctioned.bid_psbt.outpoint.txid,
                     spaceout: spaceout.clone(),
                 },
                 kind: UpdateKind::Revoke(RevokeReason::BadSpend),
-            });
+            };
+
+            // check if it's already revoked for some other reason
+            if changeset.updates.iter().any(|update| match update.kind {
+                UpdateKind::Revoke(_) => update.output.outpoint() == revoke.output.outpoint(),
+                _ => false,
+            }) {
+                return;
+            }
+            changeset.updates.push(revoke);
         }
     }
 
@@ -572,7 +582,7 @@ impl Validator {
         tx: &Transaction,
         input_index: usize,
         mut spaceout: SpaceOut,
-        existing_data: Option<Vec<u8>>,
+        existing_data: Option<Bytes>,
         changeset: &mut TxChangeSet,
     ) {
         let input = tx.input.get(input_index).expect("input");

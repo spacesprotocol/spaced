@@ -31,25 +31,18 @@ use crate::{
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 #[non_exhaustive]
 pub enum ScriptError {
-    /// Some opcode expected a parameter but it was missing or truncated.
-    EarlyEndOfScript,
-    Serialization,
-    /// invalid/malformed during OP_OPEN
-    UnexpectedLabelCount,
-    TooManyItems,
-    TooManyOpens,
     MalformedName,
     Reject(RejectParams),
 }
 
 pub type ScriptResult<T> = Result<T, ScriptError>;
 
-pub const OP_SPACE_OPEN: u8 = 1;
-pub const OP_SPACE_SET: u8 = 2;
-pub const OP_SPACE_RESERVE_1: u8 = 252;
-pub const OP_SPACE_RESERVE_2: u8 = 253;
-pub const OP_SPACE_RESERVE_3: u8 = 254;
-pub const OP_SPACE_RESERVE_4: u8 = 255;
+pub const OP_OPEN: u8 = 1;
+pub const OP_SETFALLBACK: u8 = 2;
+pub const OP_RESERVE_1: u8 = 252;
+pub const OP_RESERVE_2: u8 = 253;
+pub const OP_RESERVE_3: u8 = 254;
+pub const OP_RESERVE_4: u8 = 255;
 
 pub const MAGIC: &[u8] = &[0xde, 0xde, 0xde, 0xde];
 pub const MAGIC_LEN: usize = MAGIC.len();
@@ -76,15 +69,15 @@ impl SpaceScript {
         let name = name.as_ref();
         let mut space_script = Vec::with_capacity(MAGIC_LEN + 1 + name.len());
         space_script.extend(MAGIC);
-        space_script.push(OP_SPACE_OPEN);
+        space_script.push(OP_OPEN);
         space_script.extend(name);
         space_script
     }
 
-    pub fn create_set(data: &[u8]) -> Vec<u8> {
+    pub fn create_set_fallback(data: &[u8]) -> Vec<u8> {
         let mut space_script = Vec::with_capacity(MAGIC_LEN + 1 + data.len());
         space_script.extend(MAGIC);
-        space_script.push(OP_SPACE_SET);
+        space_script.push(OP_SETFALLBACK);
         space_script.extend(data);
         space_script
     }
@@ -92,7 +85,7 @@ impl SpaceScript {
     pub fn create_reserve() -> Vec<u8> {
         let mut space_script = Vec::with_capacity(MAGIC_LEN + 1);
         space_script.extend(MAGIC);
-        space_script.push(OP_SPACE_RESERVE_1);
+        space_script.push(OP_RESERVE_1);
         space_script
     }
 
@@ -119,15 +112,15 @@ impl SpaceScript {
         let op_data = &space_script[1..];
 
         match op {
-            OP_SPACE_OPEN => {
+            OP_OPEN => {
                 let open_result = Self::op_open::<T, H>(src, op_data)?;
                 if open_result.is_err() {
                     return Ok(Some(Err(open_result.unwrap_err())));
                 }
                 Ok(Some(Ok(SpaceScript::Open(open_result.unwrap()))))
             }
-            OP_SPACE_SET => Ok(Some(Ok(SpaceScript::Set(op_data.to_vec())))),
-            OP_SPACE_RESERVE_1..=u8::MAX => Ok(Some(Ok(SpaceScript::Reserve))),
+            OP_SETFALLBACK => Ok(Some(Ok(SpaceScript::Set(op_data.to_vec())))),
+            OP_RESERVE_1..=u8::MAX => Ok(Some(Ok(SpaceScript::Reserve))),
             _ => {
                 // NOOP
                 Ok(None)
@@ -192,11 +185,6 @@ impl core::fmt::Display for ScriptError {
         use ScriptError::*;
 
         match *self {
-            EarlyEndOfScript => f.write_str("unexpected end of script"),
-            Serialization => f.write_str("script serialization"),
-            UnexpectedLabelCount => f.write_str("unexpected label count in space name"),
-            TooManyItems => f.write_str("too many items"),
-            TooManyOpens => f.write_str("multiple opens"),
             MalformedName => f.write_str("malformed name"),
             Reject(_) => f.write_str("rejected"),
         }
@@ -215,7 +203,7 @@ mod tests {
     use crate::{
         hasher::{Hash, KeyHasher, SpaceKey},
         prepare::DataSource,
-        script::{OpenHistory, ScriptError, SpaceScript, MAGIC, MAGIC_LEN, OP_SPACE_OPEN},
+        script::{OpenHistory, ScriptError, SpaceScript, MAGIC, MAGIC_LEN, OP_OPEN},
         slabel::SLabel,
         Covenant, FullSpaceOut, Space, SpaceOut,
     };
@@ -374,7 +362,7 @@ mod tests {
         let bad_name = [200u8; 60];
         let mut space_script = Vec::with_capacity(MAGIC_LEN + 1 + bad_name.len());
         space_script.extend(MAGIC);
-        space_script.push(OP_SPACE_OPEN);
+        space_script.push(OP_OPEN);
         space_script.extend(bad_name);
 
         let mut builder3 = ScriptBuf::new();

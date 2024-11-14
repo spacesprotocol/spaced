@@ -102,7 +102,7 @@ pub enum Covenant {
         /// Block height at which this covenant expires
         expire_height: u32,
         // Any data associated with this Space
-        data: Option<Vec<u8>>,
+        data: Option<Bytes>,
     },
     /// Using a reserved op code during a spend
     /// Space will be locked until a future upgrade
@@ -156,6 +156,89 @@ pub enum BidPsbtReason {
     OutputSpent,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Bytes(Vec<u8>);
+
+impl Bytes {
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Bytes(bytes)
+    }
+    pub fn to_vec(self) -> Vec<u8> {
+        self.0
+    }
+    pub fn as_slice(&self) -> &[u8] {
+        self.0.as_slice()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+#[cfg(feature = "serde")]
+pub mod serde_bytes_impl {
+    use bitcoin::hex::prelude::*;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use crate::Bytes;
+
+    impl Serialize for Bytes {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            if serializer.is_human_readable() {
+                serializer.serialize_str(&self.0.to_lower_hex_string())
+            } else {
+                serializer.serialize_bytes(&self.0)
+            }
+        }
+    }
+
+    impl<'de> Deserialize<'de> for Bytes {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            if deserializer.is_human_readable() {
+                let hex_str = String::deserialize(deserializer)?;
+                let c = Vec::from_hex(&hex_str).map_err(serde::de::Error::custom)?;
+                Ok(Bytes::new(c))
+            } else {
+                let bytes: Vec<u8> = Deserialize::deserialize(deserializer)?;
+                Ok(Bytes(bytes))
+            }
+        }
+    }
+}
+
+#[cfg(feature = "bincode")]
+pub mod bincode_bytes_impl {
+    use bincode::{
+        de::Decoder,
+        enc::Encoder,
+        error::{DecodeError, EncodeError},
+        impl_borrow_decode, Decode, Encode,
+    };
+
+    use super::Bytes;
+
+    impl Encode for Bytes {
+        fn encode<E: Encoder>(&self, encoder: &mut E) -> Result<(), EncodeError> {
+            Encode::encode(&self.as_slice(), encoder)
+        }
+    }
+
+    impl Decode for Bytes {
+        fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, DecodeError> {
+            let raw: Vec<u8> = Decode::decode(decoder)?;
+            Ok(Bytes::new(raw))
+        }
+    }
+
+    impl_borrow_decode!(Bytes);
+}
+
 impl Space {
     pub fn is_expired(&self, height: u32) -> bool {
         match self.covenant {
@@ -201,7 +284,7 @@ impl Space {
         }
     }
 
-    pub fn data_owned(&self) -> Option<Vec<u8>> {
+    pub fn data_owned(&self) -> Option<Bytes> {
         match &self.covenant {
             Covenant::Transfer { data, .. } => match &data {
                 None => None,

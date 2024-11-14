@@ -231,6 +231,13 @@ enum Commands {
         /// The space name
         space: String,
     },
+    /// Force spend an output owned by wallet (for testing only)
+    #[command(name = "forcespend")]
+    ForceSpend {
+        outpoint: OutPoint,
+        #[arg(long, short)]
+        fee_rate: u64,
+    },
 }
 
 struct SpaceCli {
@@ -553,7 +560,7 @@ async fn handle_commands(
                 }
             };
 
-            let space_script = protocol::script::SpaceScript::create_set(data.as_slice());
+            let space_script = protocol::script::SpaceScript::create_set_fallback(data.as_slice());
 
             cli.send_request(
                 Some(RpcWalletRequest::Execute(ExecuteParams {
@@ -608,6 +615,17 @@ async fn handle_commands(
                 "{}",
                 space_hash(&space).map_err(|e| ClientError::Custom(e.to_string()))?
             );
+        }
+        Commands::ForceSpend { outpoint, fee_rate } => {
+            let result = cli
+                .client
+                .wallet_force_spend(
+                    &cli.wallet,
+                    outpoint,
+                    FeeRate::from_sat_per_vb(fee_rate).unwrap(),
+                )
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&result).expect("result"));
         }
     }
 

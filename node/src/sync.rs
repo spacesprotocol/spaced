@@ -33,6 +33,7 @@ pub struct Spaced {
     pub network: ExtendedNetwork,
     pub chain: LiveStore,
     pub block_index: Option<LiveStore>,
+    pub block_index_full: bool,
     pub rpc: BitcoinRpc,
     pub data_dir: PathBuf,
     pub bind: Vec<SocketAddr>,
@@ -147,7 +148,7 @@ impl Spaced {
         shutdown: broadcast::Sender<()>,
     ) -> anyhow::Result<()> {
         let start_block: ChainAnchor = { self.chain.state.tip.read().expect("read").clone() };
-        let mut node = Node::new();
+        let mut node = Node::new(self.block_index_full);
 
         info!(
             "Start block={} height={}",

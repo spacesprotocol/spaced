@@ -27,16 +27,23 @@ use bitcoin::{
     Amount, Block, BlockHash, FeeRate, Network, OutPoint, Psbt, Sequence, TapLeafHash,
     TapSighashType, Transaction, TxOut, Witness,
 };
-use protocol::bitcoin::{
-    constants::genesis_block,
-    key::{rand, UntweakedKeypair},
-    opcodes,
-    taproot::{ControlBlock, TaprootBuilder},
-    Address, ScriptBuf, XOnlyPublicKey,
+use protocol::{
+    bitcoin::{
+        constants::genesis_block,
+        key::{rand, UntweakedKeypair},
+        opcodes,
+        taproot::{ControlBlock, TaprootBuilder},
+        Address, ScriptBuf, XOnlyPublicKey,
+    },
+    prepare::TrackableOutput,
 };
 use serde::{ser::SerializeSeq, Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::address::SpaceAddress;
+use crate::{
+    address::SpaceAddress,
+    builder::{is_space_dust, SpacesAwareCoinSelection},
+};
+use crate::builder::is_connector_dust;
 
 pub extern crate bdk_wallet;
 pub extern crate bitcoin;
@@ -243,6 +250,20 @@ impl SpacesWallet {
                 && utxo1.keychain == KeychainKind::Internal
                 && utxo2.outpoint.vout == utxo1.outpoint.vout + 1
                 && utxo2.keychain == KeychainKind::External
+
+                // Adding these as additional safety checks since:
+                // 1. outputs less than dust threshold
+                //    are protected from being spent to fund txs.
+                // 2. outputs representing spaces use "space dust" values.
+                //
+                // All these checks are needed because we don't actaully know
+                // if an unconfirmed output is a spaceout representing a space ...
+                // TODO: store metadata to simplify things and make it safer to use
+                && utxo1.txout.value < SpacesAwareCoinSelection::DUST_THRESHOLD
+                && utxo2.txout.value < SpacesAwareCoinSelection::DUST_THRESHOLD
+                && is_connector_dust(utxo1.txout.value)
+                && !is_space_dust(utxo2.txout.value)
+                && utxo2.txout.is_magic_output()
             {
                 not_auctioned.push(DoubleUtxo {
                     spend: FullTxOut {

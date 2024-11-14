@@ -73,6 +73,9 @@ pub struct Args {
     /// Listen for JSON-RPC connections on <port>
     #[arg(long, help_heading = Some(RPC_OPTIONS), env = "SPACED_RPC_PORT")]
     rpc_port: Option<u16>,
+    /// Index blocks including the full transaction data
+    #[arg(long, env = "SPACED_BLOCK_INDEX_FULL", default_value = "false")]
+    block_index_full: bool,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, ValueEnum, Serialize, Deserialize)]
@@ -173,7 +176,8 @@ impl Args {
             store: chain_store,
         };
 
-        let block_index = if args.block_index {
+        let block_index_enabled = args.block_index || args.block_index_full;
+        let block_index = if block_index_enabled {
             let block_db_path = data_dir.join("block_index.sdb");
             if !initial_sync && !block_db_path.exists() {
                 return Err(anyhow::anyhow!(
@@ -206,6 +210,7 @@ impl Args {
             bind: rpc_bind_addresses,
             chain,
             block_index,
+            block_index_full: args.block_index_full,
             num_workers: args.jobs as usize,
         })
     }
@@ -262,7 +267,7 @@ pub fn safe_exit(code: i32) -> ! {
     std::process::exit(code)
 }
 
-fn default_bitcoin_rpc_url(network: &ExtendedNetwork) -> &'static str {
+pub fn default_bitcoin_rpc_url(network: &ExtendedNetwork) -> &'static str {
     match network {
         ExtendedNetwork::Mainnet | ExtendedNetwork::MainnetAlpha => "http://127.0.0.1:8332",
         ExtendedNetwork::Testnet4 => "http://127.0.0.1:48332",

@@ -27,7 +27,7 @@ use wallet::{
         KeychainKind, LocalOutput,
     },
     bitcoin,
-    bitcoin::{Address, Amount, FeeRate},
+    bitcoin::{Address, Amount, FeeRate, OutPoint},
     builder::{
         CoinTransfer, SpaceTransfer, SpacesAwareCoinSelection, TransactionTag, TransferRequest,
     },
@@ -92,6 +92,11 @@ pub enum WalletCommand {
     },
     ListUnspent {
         resp: crate::rpc::Responder<anyhow::Result<Vec<WalletOutput>>>,
+    },
+    ForceSpendOutput {
+        outpoint: OutPoint,
+        fee_rate: FeeRate,
+        resp: crate::rpc::Responder<anyhow::Result<TxResponse>>,
     },
     GetBalance {
         resp: crate::rpc::Responder<anyhow::Result<Balance>>,
@@ -193,6 +198,37 @@ impl RpcWallet {
         }])
     }
 
+    fn handle_force_spend_output(
+        source: &BitcoinBlockSource,
+        wallet: &mut SpacesWallet,
+        output: OutPoint,
+        fee_rate: FeeRate,
+    ) -> anyhow::Result<TxResponse> {
+        let addre = wallet.spaces.next_unused_address(KeychainKind::External);
+        let mut builder = wallet
+            .spaces
+            .build_tx()
+            .coin_selection(SpacesAwareCoinSelection::new(vec![]));
+
+        builder.fee_rate(fee_rate);
+        builder.add_utxo(output)?;
+        builder.add_recipient(addre.script_pubkey(), Amount::from_sat(5000));
+
+        let psbt = builder.finish()?;
+        let tx = wallet.sign(psbt, None)?;
+
+        let txid = tx.compute_txid();
+        let confirmation = source.rpc.broadcast_tx(&source.client, &tx)?;
+        wallet.insert_tx(tx, confirmation)?;
+        wallet.commit()?;
+
+        Ok(TxResponse {
+            txid,
+            tags: vec![TransactionTag::ForceSpendTestOnly],
+            error: None,
+        })
+    }
+
     fn wallet_handle_commands(
         network: ExtendedNetwork,
         source: &BitcoinBlockSource,
@@ -212,6 +248,14 @@ impl RpcWallet {
                 resp,
             } => {
                 let result = Self::handle_fee_bump(source, wallet, txid, fee_rate);
+                _ = resp.send(result);
+            }
+            WalletCommand::ForceSpendOutput {
+                outpoint,
+                fee_rate,
+                resp,
+            } => {
+                let result = Self::handle_force_spend_output(source, wallet, outpoint, fee_rate);
                 _ = resp.send(result);
             }
             WalletCommand::GetNewAddress { kind, resp } => {
@@ -790,6 +834,22 @@ impl RpcWallet {
         self.sender
             .send(WalletCommand::BumpFee {
                 txid,
+                fee_rate,
+                resp,
+            })
+            .await?;
+        resp_rx.await?
+    }
+
+    pub async fn send_force_spend(
+        &self,
+        outpoint: OutPoint,
+        fee_rate: FeeRate,
+    ) -> anyhow::Result<TxResponse> {
+        let (resp, resp_rx) = oneshot::channel();
+        self.sender
+            .send(WalletCommand::ForceSpendOutput {
+                outpoint,
                 fee_rate,
                 resp,
             })
