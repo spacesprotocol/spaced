@@ -12,13 +12,13 @@ use bitcoin::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    constants::RESERVED_SPACES,
     hasher::{KeyHasher, SpaceKey},
     prepare::DataSource,
     slabel::{SLabel, SLabelRef},
     validate::RejectParams,
     FullSpaceOut,
 };
-use crate::constants::RESERVED_SPACES;
 
 /// Ways that a script might fail. Not everything is split up as
 /// much as it could be; patches welcome if more detailed errors
@@ -140,7 +140,10 @@ impl SpaceScript {
         }
         let name = name.unwrap();
 
-        if RESERVED_SPACES.iter().any(|reserved| *reserved == name.as_ref()) {
+        if RESERVED_SPACES
+            .iter()
+            .any(|reserved| *reserved == name.as_ref())
+        {
             return Ok(Err(ScriptError::ReservedName));
         }
 

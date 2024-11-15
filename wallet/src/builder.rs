@@ -1006,4 +1006,3 @@ pub fn space_dust(amount: Amount) -> Amount {
 pub fn is_space_dust(amount: Amount) -> bool {
     amount.to_sat() % 10 == 6
 }
-

@@ -41,9 +41,8 @@ use serde::{ser::SerializeSeq, Deserialize, Deserializer, Serialize, Serializer}
 
 use crate::{
     address::SpaceAddress,
-    builder::{is_space_dust, SpacesAwareCoinSelection},
+    builder::{is_connector_dust, is_space_dust, SpacesAwareCoinSelection},
 };
-use crate::builder::is_connector_dust;
 
 pub extern crate bdk_wallet;
 pub extern crate bitcoin;
