@@ -18,6 +18,7 @@ use crate::{
     validate::RejectParams,
     FullSpaceOut,
 };
+use crate::constants::RESERVED_SPACES;
 
 /// Ways that a script might fail. Not everything is split up as
 /// much as it could be; patches welcome if more detailed errors
@@ -32,6 +33,7 @@ use crate::{
 #[non_exhaustive]
 pub enum ScriptError {
     MalformedName,
+    ReservedName,
     Reject(RejectParams),
 }
 
@@ -138,6 +140,10 @@ impl SpaceScript {
         }
         let name = name.unwrap();
 
+        if RESERVED_SPACES.iter().any(|reserved| *reserved == name.as_ref()) {
+            return Ok(Err(ScriptError::ReservedName));
+        }
+
         let kind = {
             let spacehash = SpaceKey::from(H::hash(name.as_ref()));
             let existing = src.get_space_outpoint(&spacehash)?;
@@ -186,6 +192,7 @@ impl core::fmt::Display for ScriptError {
 
         match *self {
             MalformedName => f.write_str("malformed name"),
+            ReservedName => f.write_str("reserved name"),
             Reject(_) => f.write_str("rejected"),
         }
     }
