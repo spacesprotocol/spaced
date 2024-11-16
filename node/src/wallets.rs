@@ -195,12 +195,13 @@ impl RpcWallet {
         let psbt = builder.finish()?;
         let tx = wallet.sign(psbt, None)?;
 
+        let new_txid = tx.compute_txid();
         let confirmation = source.rpc.broadcast_tx(&source.client, &tx)?;
         wallet.insert_tx(tx, confirmation)?;
         wallet.commit()?;
 
         Ok(vec![TxResponse {
-            txid,
+            txid: new_txid,
             tags: vec![TransactionTag::FeeBump],
             error: None,
         }])
