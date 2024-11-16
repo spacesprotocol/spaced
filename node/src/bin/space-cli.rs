@@ -2,7 +2,6 @@ extern crate core;
 
 use std::{fs, path::PathBuf, str::FromStr};
 
-use base64::{prelude::BASE64_STANDARD, Engine};
 use clap::{Parser, Subcommand};
 use jsonrpsee::{
     core::{client::Error, ClientError},
@@ -31,14 +30,14 @@ use wallet::export::WalletExport;
 pub struct Args {
     /// Bitcoin network to use
     #[arg(long, env = "SPACED_CHAIN")]
-    chain: spaced::config::ExtendedNetwork,
+    chain: ExtendedNetwork,
     /// Spaced RPC URL [default: based on specified chain]
     #[arg(long)]
     spaced_rpc_url: Option<String>,
     /// Specify wallet to use
     #[arg(long, short, global = true, default_value = "default")]
     wallet: String,
-    /// Custom dust amount in sat for auction outputs
+    /// Custom dust amount in sat for bid outputs
     #[arg(long, short, global = true)]
     dust: Option<u64>,
     /// Force invalid transaction (for testing only)
@@ -52,21 +51,15 @@ pub struct Args {
 enum Commands {
     /// Generate a new wallet
     #[command(name = "createwallet")]
-    CreateWallet {
-        #[arg(default_value = "default")]
-        name: String,
-    },
+    CreateWallet,
     /// Load a wallet
     #[command(name = "loadwallet")]
-    LoadWallet {
-        #[arg(default_value = "default")]
-        name: String,
-    },
+    LoadWallet,
     /// Export a wallet
     #[command(name = "exportwallet")]
     ExportWallet {
-        #[arg(default_value = "default")]
-        name: String,
+        // Destination path to export json file
+        path: PathBuf,
     },
     /// Import a wallet
     #[command(name = "importwallet")]
@@ -76,10 +69,7 @@ enum Commands {
     },
     /// Export a wallet
     #[command(name = "getwalletinfo")]
-    GetWalletInfo {
-        #[arg(default_value = "default")]
-        name: String,
-    },
+    GetWalletInfo,
     /// Export a wallet
     #[command(name = "getserverinfo")]
     GetServerInfo,
@@ -163,8 +153,8 @@ enum Commands {
     #[command(name = "balance")]
     Balance,
     /// Pre-create outputs that can be auctioned off during the bidding process
-    #[command(name = "createauctionoutputs")]
-    CreateAuctionOutputs {
+    #[command(name = "createbidout")]
+    CreateBidOut {
         /// Number of output pairs to create
         /// Each pair can be used to make a bid
         pairs: u8,
@@ -195,12 +185,13 @@ enum Commands {
         #[arg(default_value = "0")]
         target_interval: usize,
     },
-    /// Associate the specified data with a given space (experimental may be removed)
-    #[command(name = "setdata")]
-    SetData {
+    /// Associate the specified data with a given space (not recommended use Fabric instead)
+    /// If for whatever reason it's not possible to use other protocols, then you may use this.
+    #[command(name = "setrawfallback")]
+    SetRawFallback {
         /// Space name
         space: String,
-        /// Base64 encoded data
+        /// Hex encoded data
         data: String,
         /// Fee rate to use in sat/vB
         #[arg(long, short)]
@@ -212,8 +203,8 @@ enum Commands {
     ListSpaces,
     /// List unspent auction outputs i.e. outputs that can be
     /// auctioned off in the bidding process
-    #[command(name = "listauctionoutputs")]
-    ListAuctionOutputs,
+    #[command(name = "listbidouts")]
+    ListBidOuts,
     /// List unspent coins owned by wallet
     #[command(name = "listunspent")]
     ListUnspent,
@@ -441,11 +432,11 @@ async fn handle_commands(
             let response = cli.client.get_spaceout(outpoint).await?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
-        Commands::CreateWallet { name } => {
-            cli.client.wallet_create(&name).await?;
+        Commands::CreateWallet  => {
+            cli.client.wallet_create(&cli.wallet).await?;
         }
-        Commands::LoadWallet { name } => {
-            cli.client.wallet_load(&name).await?;
+        Commands::LoadWallet => {
+            cli.client.wallet_load(&cli.wallet).await?;
         }
         Commands::ImportWallet { path } => {
             let content =
@@ -453,12 +444,14 @@ async fn handle_commands(
             let wallet: WalletExport = serde_json::from_str(&content)?;
             cli.client.wallet_import(wallet).await?;
         }
-        Commands::ExportWallet { name } => {
-            let result = cli.client.wallet_export(&name).await?;
-            println!("{}", serde_json::to_string_pretty(&result).expect("result"));
+        Commands::ExportWallet { path } => {
+            let result = cli.client.wallet_export(&cli.wallet).await?;
+            let content = serde_json::to_string_pretty(&result).expect("result");
+            fs::write(path, content).map_err(|e|
+                ClientError::Custom(format!("Could not save to path: {}", e.to_string())))?;
         }
-        Commands::GetWalletInfo { name } => {
-            let result = cli.client.wallet_get_info(&name).await?;
+        Commands::GetWalletInfo  => {
+            let result = cli.client.wallet_get_info(&cli.wallet).await?;
             println!("{}", serde_json::to_string_pretty(&result).expect("result"));
         }
         Commands::GetServerInfo => {
@@ -495,7 +488,7 @@ async fn handle_commands(
             )
             .await?
         }
-        Commands::CreateAuctionOutputs { pairs, fee_rate } => {
+        Commands::CreateBidOut { pairs, fee_rate } => {
             cli.send_request(None, Some(pairs), fee_rate).await?
         }
         Commands::Register {
@@ -544,17 +537,17 @@ async fn handle_commands(
             )
             .await?
         }
-        Commands::SetData {
+        Commands::SetRawFallback {
             mut space,
             data,
             fee_rate,
         } => {
             space = normalize_space(&space);
-            let data = match BASE64_STANDARD.decode(data) {
+            let data = match hex::decode(data) {
                 Ok(data) => data,
                 Err(e) => {
                     return Err(ClientError::Custom(format!(
-                        "Could not base64 decode data: {}",
+                        "Could not hex decode data: {}",
                         e
                     )))
                 }
@@ -576,7 +569,7 @@ async fn handle_commands(
             let spaces = cli.client.wallet_list_unspent(&cli.wallet).await?;
             println!("{}", serde_json::to_string_pretty(&spaces)?);
         }
-        Commands::ListAuctionOutputs => {
+        Commands::ListBidOuts => {
             let spaces = cli.client.wallet_list_auction_outputs(&cli.wallet).await?;
             println!("{}", serde_json::to_string_pretty(&spaces)?);
         }
