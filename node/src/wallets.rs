@@ -479,7 +479,7 @@ impl RpcWallet {
             Ok(sname) => sname,
             Err(_) => {
                 return Err(anyhow!(
-                    "recipient must be a valid space name or an address"
+                    "recipient must be a valid space name prefixed with @ or an address"
                 ));
             }
         };
