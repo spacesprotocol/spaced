@@ -1,6 +1,8 @@
 use alloc::string::String;
 use core::fmt::{self, Display, Formatter};
 
+use crate::slabel::NameErrorKind;
+
 pub type Result<T> = core::result::Result<T, Error>;
 
 #[derive(Debug)]
@@ -24,11 +26,6 @@ pub enum StateErrorKind {
     ExpectedSpace,
     InvalidRolloutState,
     MissingOpenTxOut,
-}
-
-#[derive(Debug)]
-pub enum NameErrorKind {
-    MalformedName,
 }
 
 impl Display for Error {

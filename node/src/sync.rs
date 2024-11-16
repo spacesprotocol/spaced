@@ -3,7 +3,7 @@ use std::{net::SocketAddr, path::PathBuf, time::Duration};
 use anyhow::{anyhow, Context};
 use log::info;
 use protocol::{
-    bitcoin::{Block, BlockHash},
+    bitcoin::{hashes::Hash, Block, BlockHash},
     constants::ChainAnchor,
     hasher::BaseHash,
 };
@@ -33,6 +33,7 @@ pub struct Spaced {
     pub network: ExtendedNetwork,
     pub chain: LiveStore,
     pub block_index: Option<LiveStore>,
+    pub block_index_full: bool,
     pub rpc: BitcoinRpc,
     pub data_dir: PathBuf,
     pub bind: Vec<SocketAddr>,
@@ -147,7 +148,7 @@ impl Spaced {
         shutdown: broadcast::Sender<()>,
     ) -> anyhow::Result<()> {
         let start_block: ChainAnchor = { self.chain.state.tip.read().expect("read").clone() };
-        let mut node = Node::new();
+        let mut node = Node::new(self.block_index_full);
 
         info!(
             "Start block={} height={}",
@@ -190,12 +191,37 @@ impl Spaced {
         Ok(())
     }
 
-    pub fn genesis(network: ExtendedNetwork) -> ChainAnchor {
-        match network {
+    pub async fn genesis(
+        rpc: &BitcoinRpc,
+        network: ExtendedNetwork,
+    ) -> anyhow::Result<ChainAnchor> {
+        let mut anchor = match network {
             ExtendedNetwork::Testnet => ChainAnchor::TESTNET(),
             ExtendedNetwork::Testnet4 => ChainAnchor::TESTNET4(),
             ExtendedNetwork::Regtest => ChainAnchor::REGTEST(),
+            ExtendedNetwork::Mainnet => ChainAnchor::MAINNET(),
+            ExtendedNetwork::MainnetAlpha => ChainAnchor::MAINNET_ALPHA(),
             _ => panic!("unsupported network"),
+        };
+
+        if anchor.hash == BlockHash::all_zeros() {
+            let client = reqwest::Client::new();
+
+            anchor.hash = match rpc
+                .send_json(&client, &rpc.get_block_hash(anchor.height))
+                .await
+            {
+                Ok(hash) => hash,
+                Err(e) => {
+                    return Err(anyhow!(
+                        "Could not retrieve activation block at height {}: {}",
+                        anchor.height,
+                        e
+                    ));
+                }
+            }
         }
+
+        Ok(anchor)
     }
 }

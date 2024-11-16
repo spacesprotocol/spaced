@@ -694,7 +694,8 @@ impl std::error::Error for BitcoinRpcError {
 
 impl ErrorForRpc for reqwest::Response {
     async fn error_for_rpc<T: DeserializeOwned>(self) -> Result<T, BitcoinRpcError> {
-        let rpc_res: JsonRpcResponse<T> = self.json().await?;
+        let res = self.error_for_status()?;
+        let rpc_res: JsonRpcResponse<T> = res.json().await?;
         if let Some(e) = rpc_res.error {
             return Err(BitcoinRpcError::Rpc(e));
         }
@@ -705,7 +706,8 @@ impl ErrorForRpc for reqwest::Response {
 
 impl ErrorForRpcBlocking for reqwest::blocking::Response {
     fn error_for_rpc<T: DeserializeOwned>(self) -> Result<T, BitcoinRpcError> {
-        let rpc_res: JsonRpcResponse<T> = self.json()?;
+        let res = self.error_for_status()?;
+        let rpc_res: JsonRpcResponse<T> = res.json()?;
         if let Some(e) = rpc_res.error {
             return Err(BitcoinRpcError::Rpc(e));
         }

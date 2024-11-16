@@ -10,9 +10,8 @@ use protocol::{
     constants::{ChainAnchor, ROLLOUT_BATCH_SIZE, ROLLOUT_BLOCK_INTERVAL},
     hasher::{BidKey, KeyHasher, OutpointKey, SpaceKey},
     prepare::TxContext,
-    sname::NameLike,
     validate::{TxChangeSet, UpdateKind, Validator},
-    Covenant, FullSpaceOut, RevokeReason, SpaceOut,
+    Bytes, Covenant, FullSpaceOut, RevokeReason, SpaceOut,
 };
 use serde::{Deserialize, Serialize};
 use wallet::bitcoin::Transaction;
@@ -33,13 +32,29 @@ pub trait BlockSource {
 #[derive(Debug, Clone)]
 pub struct Node {
     validator: Validator,
+    tx_data: bool,
 }
 
 /// A block structure containing validated transaction metadata
 /// relevant to the Spaces protocol
 #[derive(Clone, Serialize, Deserialize, Encode, Decode)]
 pub struct BlockMeta {
-    pub tx_meta: Vec<TxChangeSet>,
+    pub height: u32,
+    pub tx_meta: Vec<TxEntry>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Encode, Decode)]
+pub struct TxEntry {
+    #[serde(flatten)]
+    pub changeset: TxChangeSet,
+    #[serde(skip_serializing_if = "Option::is_none", flatten)]
+    pub tx: Option<TxData>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Encode, Decode)]
+pub struct TxData {
+    pub position: u32,
+    pub raw: Bytes,
 }
 
 #[derive(Debug)]
@@ -61,9 +76,10 @@ impl fmt::Display for SyncError {
 impl Error for SyncError {}
 
 impl Node {
-    pub fn new() -> Self {
+    pub fn new(tx_data: bool) -> Self {
         Self {
             validator: Validator::new(),
+            tx_data,
         }
     }
 
@@ -86,7 +102,10 @@ impl Node {
             }
         }
 
-        let mut block_data = BlockMeta { tx_meta: vec![] };
+        let mut block_data = BlockMeta {
+            height,
+            tx_meta: vec![],
+        };
 
         if (height - 1) % ROLLOUT_BLOCK_INTERVAL == 0 {
             let batch = Self::get_rollout_batch(ROLLOUT_BATCH_SIZE, chain)?;
@@ -97,13 +116,24 @@ impl Node {
 
             let validated = self.validator.rollout(height, &coinbase, batch);
             if get_block_data {
-                block_data.tx_meta.push(validated.clone());
+                block_data.tx_meta.push(TxEntry {
+                    changeset: validated.clone(),
+                    tx: if self.tx_data {
+                        Some(TxData {
+                            position: 0,
+                            raw: Bytes::new(protocol::bitcoin::consensus::encode::serialize(
+                                &coinbase,
+                            )),
+                        })
+                    } else {
+                        None
+                    },
+                });
             }
-
             self.apply_tx(&mut chain.state, &coinbase, validated);
         }
 
-        for tx in block.txdata {
+        for (position, tx) in block.txdata.into_iter().enumerate() {
             let prepared_tx =
                 { TxContext::from_tx::<LiveSnapshot, Sha256>(&mut chain.state, &tx)? };
 
@@ -111,7 +141,19 @@ impl Node {
                 let validated_tx = self.validator.process(height, &tx, prepared_tx);
 
                 if get_block_data {
-                    block_data.tx_meta.push(validated_tx.clone());
+                    block_data.tx_meta.push(TxEntry {
+                        changeset: validated_tx.clone(),
+                        tx: if self.tx_data {
+                            Some(TxData {
+                                position: position as u32,
+                                raw: Bytes::new(protocol::bitcoin::consensus::encode::serialize(
+                                    &tx,
+                                )),
+                            })
+                        } else {
+                            None
+                        },
+                    });
                 }
                 self.apply_tx(&mut chain.state, &tx, validated_tx);
             }
@@ -149,7 +191,7 @@ impl Node {
 
             // Space => Outpoint
             if let Some(space) = create.space.as_ref() {
-                let space_key = SpaceKey::from(Sha256::hash(space.name.to_bytes()));
+                let space_key = SpaceKey::from(Sha256::hash(space.name.as_ref()));
                 state.insert_space(space_key, outpoint.into());
             }
             // Outpoint => SpaceOut
@@ -168,7 +210,7 @@ impl Node {
                             // Since these are caused by spends
                             // Outpoint -> Spaceout mapping is already removed,
                             let space = update.output.spaceout.space.unwrap();
-                            let base_hash = Sha256::hash(space.name.to_bytes());
+                            let base_hash = Sha256::hash(space.name.as_ref());
 
                             // Remove Space -> Outpoint
                             let space_key = SpaceKey::from(base_hash);
@@ -209,7 +251,7 @@ impl Node {
                             .as_ref()
                             .expect("a space in rollout")
                             .name
-                            .to_bytes(),
+                            .as_ref(),
                     );
                     let bid_key = BidKey::from_bid(rollout.priority, base_hash);
 
@@ -229,7 +271,7 @@ impl Node {
                             .as_ref()
                             .expect("space")
                             .name
-                            .to_bytes(),
+                            .as_ref(),
                     );
 
                     let (bid_value, previous_bid) = unwrap_bid_value(&update.output.spaceout);

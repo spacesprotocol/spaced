@@ -9,7 +9,8 @@ use protocol::{
     constants::ChainAnchor,
     hasher::{KeyHasher, SpaceKey},
     prepare::DataSource,
-    sname::{NameLike, SName},
+    script::SpaceScript,
+    slabel::SLabel,
     Space,
 };
 use serde::{Deserialize, Serialize};
@@ -26,13 +27,13 @@ use wallet::{
         KeychainKind, LocalOutput,
     },
     bitcoin,
-    bitcoin::{Address, Amount, FeeRate},
+    bitcoin::{Address, Amount, FeeRate, OutPoint},
     builder::{
         CoinTransfer, SpaceTransfer, SpacesAwareCoinSelection, TransactionTag, TransferRequest,
     },
     DoubleUtxo, SpacesWallet, WalletInfo,
 };
-
+use wallet::bdk_wallet::wallet::tx_builder::TxOrdering;
 use crate::{
     config::ExtendedNetwork,
     node::BlockSource,
@@ -91,6 +92,11 @@ pub enum WalletCommand {
     },
     ListUnspent {
         resp: crate::rpc::Responder<anyhow::Result<Vec<WalletOutput>>>,
+    },
+    ForceSpendOutput {
+        outpoint: OutPoint,
+        fee_rate: FeeRate,
+        resp: crate::rpc::Responder<anyhow::Result<TxResponse>>,
     },
     GetBalance {
         resp: crate::rpc::Responder<anyhow::Result<Balance>>,
@@ -154,8 +160,11 @@ impl RpcWallet {
             balance,
             dust: unspent
                 .into_iter()
-                .filter(|output| output.is_spaceout ||
-                    output.output.txout.value <= SpacesAwareCoinSelection::DUST_THRESHOLD)
+                .filter(|output|
+                    (output.is_spaceout || output.output.txout.value <= SpacesAwareCoinSelection::DUST_THRESHOLD) &&
+                        // trusted pending only
+                        (output.output.confirmation_time.is_confirmed() || output.output.keychain == KeychainKind::Internal)
+                )
                 .map(|output| output.output.txout.value)
                 .sum(),
         };
@@ -168,25 +177,69 @@ impl RpcWallet {
 
     fn handle_fee_bump(
         source: &BitcoinBlockSource,
+        state: &mut LiveSnapshot,
         wallet: &mut SpacesWallet,
         txid: Txid,
         fee_rate: FeeRate,
     ) -> anyhow::Result<Vec<TxResponse>> {
-        let mut builder = wallet.spaces.build_fee_bump(txid)?;
-        builder.fee_rate(fee_rate);
+        let coin_selection = Self::get_spaces_coin_selection(wallet, state)?;
+        let mut builder = wallet.spaces
+            .build_fee_bump(txid)?
+            .coin_selection(coin_selection);
+
+        builder
+            .enable_rbf()
+            .ordering(TxOrdering::Untouched)
+            .fee_rate(fee_rate);
 
         let psbt = builder.finish()?;
         let tx = wallet.sign(psbt, None)?;
 
+        let new_txid = tx.compute_txid();
         let confirmation = source.rpc.broadcast_tx(&source.client, &tx)?;
         wallet.insert_tx(tx, confirmation)?;
         wallet.commit()?;
 
         Ok(vec![TxResponse {
-            txid,
+            txid: new_txid,
             tags: vec![TransactionTag::FeeBump],
             error: None,
         }])
+    }
+
+    fn handle_force_spend_output(
+        source: &BitcoinBlockSource,
+        state: &mut LiveSnapshot,
+        wallet: &mut SpacesWallet,
+        output: OutPoint,
+        fee_rate: FeeRate,
+    ) -> anyhow::Result<TxResponse> {
+        let coin_selection = Self::get_spaces_coin_selection(wallet, state)?;
+        let addre = wallet.spaces.next_unused_address(KeychainKind::External);
+        let mut builder = wallet
+            .spaces
+            .build_tx()
+            .coin_selection(coin_selection);
+
+        builder.ordering(TxOrdering::Untouched);
+        builder.fee_rate(fee_rate);
+        builder.enable_rbf();
+        builder.add_utxo(output)?;
+        builder.add_recipient(addre.script_pubkey(), Amount::from_sat(5000));
+
+        let psbt = builder.finish()?;
+        let tx = wallet.sign(psbt, None)?;
+
+        let txid = tx.compute_txid();
+        let confirmation = source.rpc.broadcast_tx(&source.client, &tx)?;
+        wallet.insert_tx(tx, confirmation)?;
+        wallet.commit()?;
+
+        Ok(TxResponse {
+            txid,
+            tags: vec![TransactionTag::ForceSpendTestOnly],
+            error: None,
+        })
     }
 
     fn wallet_handle_commands(
@@ -207,7 +260,15 @@ impl RpcWallet {
                 fee_rate,
                 resp,
             } => {
-                let result = Self::handle_fee_bump(source, wallet, txid, fee_rate);
+                let result = Self::handle_fee_bump(source, &mut state, wallet, txid, fee_rate);
+                _ = resp.send(result);
+            }
+            WalletCommand::ForceSpendOutput {
+                outpoint,
+                fee_rate,
+                resp,
+            } => {
+                let result = Self::handle_force_spend_output(source, &mut state, wallet, outpoint, fee_rate);
                 _ = resp.send(result);
             }
             WalletCommand::GetNewAddress { kind, resp } => {
@@ -414,7 +475,7 @@ impl RpcWallet {
             return Ok(Some(space_address.0));
         }
 
-        let sname = match SName::from_str(to) {
+        let sname = match SLabel::from_str(to) {
             Ok(sname) => sname,
             Err(_) => {
                 return Err(anyhow!(
@@ -423,7 +484,7 @@ impl RpcWallet {
             }
         };
 
-        let spacehash = SpaceKey::from(Sha256::hash(sname.to_bytes()));
+        let spacehash = SpaceKey::from(Sha256::hash(sname.as_ref()));
         let script_pubkey = match store.get_space_info(&spacehash)? {
             None => return Ok(None),
             Some(fullspaceout) => fullspaceout.spaceout.script_pubkey,
@@ -446,8 +507,10 @@ impl RpcWallet {
             if dust > SpacesAwareCoinSelection::DUST_THRESHOLD {
                 // Allowing higher dust may space outs to be accidentally
                 // spent during coin selection
-                return Err(anyhow!("dust cannot be higher than {}",
-                    SpacesAwareCoinSelection::DUST_THRESHOLD));
+                return Err(anyhow!(
+                    "dust cannot be higher than {}",
+                    SpacesAwareCoinSelection::DUST_THRESHOLD
+                ));
             }
         }
 
@@ -486,7 +549,7 @@ impl RpcWallet {
                     let spaces: Vec<_> = params
                         .spaces
                         .iter()
-                        .filter_map(|space| SName::from_str(space).ok())
+                        .filter_map(|space| SLabel::from_str(space).ok())
                         .collect();
                     if spaces.len() != params.spaces.len() {
                         return Err(anyhow!("sendspaces: some names were malformed"));
@@ -498,7 +561,7 @@ impl RpcWallet {
                         Some(r) => r,
                     };
                     for space in spaces {
-                        let spacehash = SpaceKey::from(Sha256::hash(space.to_bytes()));
+                        let spacehash = SpaceKey::from(Sha256::hash(space.as_ref()));
                         match store.get_space_info(&spacehash)? {
                             None => return Err(anyhow!("sendspaces: you don't own `{}`", space)),
                             Some(full)
@@ -521,10 +584,10 @@ impl RpcWallet {
                     }
                 }
                 RpcWalletRequest::Open(params) => {
-                    let name = SName::from_str(&params.name)?;
+                    let name = SLabel::from_str(&params.name)?;
                     if !tx.force {
                         // Warn if already exists
-                        let spacehash = SpaceKey::from(Sha256::hash(name.to_bytes()));
+                        let spacehash = SpaceKey::from(Sha256::hash(name.as_ref()));
                         let spaceout = store.get_space_info(&spacehash)?;
                         if spaceout.is_some() {
                             return Err(anyhow!("open '{}': space already exists", params.name));
@@ -534,8 +597,8 @@ impl RpcWallet {
                     builder = builder.add_open(&params.name, Amount::from_sat(params.amount));
                 }
                 RpcWalletRequest::Bid(params) => {
-                    let name = SName::from_str(&params.name)?;
-                    let spacehash = SpaceKey::from(Sha256::hash(name.to_bytes()));
+                    let name = SLabel::from_str(&params.name)?;
+                    let spacehash = SpaceKey::from(Sha256::hash(name.as_ref()));
                     let spaceout = store.get_space_info(&spacehash)?;
                     if spaceout.is_none() {
                         return Err(anyhow!("bid '{}': space does not exist", params.name));
@@ -543,8 +606,8 @@ impl RpcWallet {
                     builder = builder.add_bid(spaceout.unwrap(), Amount::from_sat(params.amount));
                 }
                 RpcWalletRequest::Register(params) => {
-                    let name = SName::from_str(&params.name)?;
-                    let spacehash = SpaceKey::from(Sha256::hash(name.to_bytes()));
+                    let name = SLabel::from_str(&params.name)?;
+                    let spacehash = SpaceKey::from(Sha256::hash(name.as_ref()));
                     let spaceout = store.get_space_info(&spacehash)?;
                     if spaceout.is_none() {
                         return Err(anyhow!("register '{}': space does not exist", params.name));
@@ -596,8 +659,8 @@ impl RpcWallet {
                 RpcWalletRequest::Execute(params) => {
                     let mut spaces = Vec::new();
                     for space in params.context.iter() {
-                        let name = SName::from_str(&space)?;
-                        let spacehash = SpaceKey::from(Sha256::hash(name.to_bytes()));
+                        let name = SLabel::from_str(&space)?;
+                        let spacehash = SpaceKey::from(Sha256::hash(name.as_ref()));
                         let spaceout = store.get_space_info(&spacehash)?;
                         if spaceout.is_none() {
                             return Err(anyhow!("execute on '{}': space does not exist", space));
@@ -615,7 +678,9 @@ impl RpcWallet {
                             recipient: address.0,
                         });
                     }
-                    builder = builder.add_execute(spaces, params.space_script);
+
+                    let script = SpaceScript::nop_script(params.space_script);
+                    builder = builder.add_execute(spaces, script);
                 }
             }
         }
@@ -782,6 +847,22 @@ impl RpcWallet {
         self.sender
             .send(WalletCommand::BumpFee {
                 txid,
+                fee_rate,
+                resp,
+            })
+            .await?;
+        resp_rx.await?
+    }
+
+    pub async fn send_force_spend(
+        &self,
+        outpoint: OutPoint,
+        fee_rate: FeeRate,
+    ) -> anyhow::Result<TxResponse> {
+        let (resp, resp_rx) = oneshot::channel();
+        self.sender
+            .send(WalletCommand::ForceSpendOutput {
+                outpoint,
                 fee_rate,
                 resp,
             })
