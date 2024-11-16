@@ -57,6 +57,16 @@ impl ChainAnchor {
         }
     }
 
+    pub const MAINNET: fn() -> Self = || ChainAnchor {
+        hash: BlockHash::all_zeros(),
+        height: 871_222,
+    };
+
+    pub const MAINNET_ALPHA: fn() -> Self = || ChainAnchor {
+        hash: BlockHash::all_zeros(),
+        height: 870_000,
+    };
+
     // Testnet4 activation block
     pub const TESTNET4: fn() -> Self = || {
         Self::new(
@@ -65,18 +75,8 @@ impl ChainAnchor {
                 0x3d, 0x68, 0x8f, 0x7a, 0x90, 0x0d, 0x56, 0x79, 0xe0, 0x63, 0x08, 0x00, 0x00, 0x00,
                 0x00, 0x00, 0x00, 0x00,
             ],
-            38_580,
+            50_000,
         )
-    };
-
-    pub const MAINNET_ALPHA: fn() -> Self = || ChainAnchor {
-        hash: BlockHash::all_zeros(),
-        height: 869_000,
-    };
-
-    pub const MAINNET: fn() -> Self = || ChainAnchor {
-        hash: BlockHash::all_zeros(),
-        height: 871_222,
     };
 
     // Testnet activation block
