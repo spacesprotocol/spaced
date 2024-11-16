@@ -370,7 +370,9 @@ impl Builder {
         }
 
         let commit_psbt = {
-            let mut builder = w.spaces.build_tx().coin_selection(coin_selection);
+            let mut builder = w.spaces
+                .build_tx()
+                .coin_selection(coin_selection);
             builder.nlocktime(magic_lock_time(median_time));
 
             builder.ordering(TxOrdering::Untouched);
@@ -799,7 +801,9 @@ impl Builder {
     ) -> anyhow::Result<Transaction> {
         let (offer, placeholder) = w.new_bid_psbt(bid)?;
         let bid_psbt = {
-            let mut builder = w.spaces.build_tx().coin_selection(coin_selection);
+            let mut builder = w.spaces
+                .build_tx()
+                .coin_selection(coin_selection);
             builder
                 .ordering(TxOrdering::Untouched)
                 .nlocktime(LockTime::Blocks(Height::ZERO))
@@ -830,7 +834,9 @@ impl Builder {
         let (offer, placeholder) = w.new_bid_psbt(params.amount)?;
         let mut extra_prevouts = BTreeMap::new();
         let open_psbt = {
-            let mut builder = w.spaces.build_tx().coin_selection(coin_selection);
+            let mut builder = w.spaces
+                .build_tx()
+                .coin_selection(coin_selection);
             builder.ordering(TxOrdering::Untouched).add_bid(
                 None,
                 offer,
@@ -865,7 +871,9 @@ impl Builder {
                 .spaces
                 .next_unused_address(KeychainKind::Internal)
                 .script_pubkey();
-            let mut builder = w.spaces.build_tx().coin_selection(coin_selection);
+            let mut builder = w.spaces
+                .build_tx()
+                .coin_selection(coin_selection);
 
             builder
                 .ordering(TxOrdering::Untouched)

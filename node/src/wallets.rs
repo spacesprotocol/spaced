@@ -33,7 +33,7 @@ use wallet::{
     },
     DoubleUtxo, SpacesWallet, WalletInfo,
 };
-
+use wallet::bdk_wallet::wallet::tx_builder::TxOrdering;
 use crate::{
     config::ExtendedNetwork,
     node::BlockSource,
@@ -177,12 +177,20 @@ impl RpcWallet {
 
     fn handle_fee_bump(
         source: &BitcoinBlockSource,
+        state: &mut LiveSnapshot,
         wallet: &mut SpacesWallet,
         txid: Txid,
         fee_rate: FeeRate,
     ) -> anyhow::Result<Vec<TxResponse>> {
-        let mut builder = wallet.spaces.build_fee_bump(txid)?;
-        builder.fee_rate(fee_rate);
+        let coin_selection = Self::get_spaces_coin_selection(wallet, state)?;
+        let mut builder = wallet.spaces
+            .build_fee_bump(txid)?
+            .coin_selection(coin_selection);
+
+        builder
+            .enable_rbf()
+            .ordering(TxOrdering::Untouched)
+            .fee_rate(fee_rate);
 
         let psbt = builder.finish()?;
         let tx = wallet.sign(psbt, None)?;
@@ -200,17 +208,21 @@ impl RpcWallet {
 
     fn handle_force_spend_output(
         source: &BitcoinBlockSource,
+        state: &mut LiveSnapshot,
         wallet: &mut SpacesWallet,
         output: OutPoint,
         fee_rate: FeeRate,
     ) -> anyhow::Result<TxResponse> {
+        let coin_selection = Self::get_spaces_coin_selection(wallet, state)?;
         let addre = wallet.spaces.next_unused_address(KeychainKind::External);
         let mut builder = wallet
             .spaces
             .build_tx()
-            .coin_selection(SpacesAwareCoinSelection::new(vec![]));
+            .coin_selection(coin_selection);
 
+        builder.ordering(TxOrdering::Untouched);
         builder.fee_rate(fee_rate);
+        builder.enable_rbf();
         builder.add_utxo(output)?;
         builder.add_recipient(addre.script_pubkey(), Amount::from_sat(5000));
 
@@ -247,7 +259,7 @@ impl RpcWallet {
                 fee_rate,
                 resp,
             } => {
-                let result = Self::handle_fee_bump(source, wallet, txid, fee_rate);
+                let result = Self::handle_fee_bump(source, &mut state, wallet, txid, fee_rate);
                 _ = resp.send(result);
             }
             WalletCommand::ForceSpendOutput {
@@ -255,7 +267,7 @@ impl RpcWallet {
                 fee_rate,
                 resp,
             } => {
-                let result = Self::handle_force_spend_output(source, wallet, outpoint, fee_rate);
+                let result = Self::handle_force_spend_output(source, &mut state, wallet, outpoint, fee_rate);
                 _ = resp.send(result);
             }
             WalletCommand::GetNewAddress { kind, resp } => {
