@@ -1,3 +1,4 @@
+use crate::store::RolloutEntry;
 use std::{
     collections::BTreeMap, fs, io::Write, net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc,
 };
@@ -58,6 +59,8 @@ pub struct ServerInfo {
     pub tip: ChainAnchor,
 }
 
+
+
 pub enum ChainStateCommand {
     GetTip {
         resp: Responder<anyhow::Result<ChainAnchor>>,
@@ -89,7 +92,7 @@ pub enum ChainStateCommand {
     },
     GetRollout {
         target: usize,
-        resp: Responder<anyhow::Result<Vec<(u32, SpaceKey)>>>,
+        resp: Responder<anyhow::Result<Vec<RolloutEntry>>>,
     },
 }
 
@@ -117,7 +120,7 @@ pub trait Rpc {
     async fn estimate_bid(&self, target: usize) -> Result<u64, ErrorObjectOwned>;
 
     #[method(name = "getrollout")]
-    async fn get_rollout(&self, target: usize) -> Result<Vec<(u32, SpaceKey)>, ErrorObjectOwned>;
+    async fn get_rollout(&self, target: usize) -> Result<Vec<RolloutEntry>, ErrorObjectOwned>;
 
     #[method(name = "getblockmeta")]
     async fn get_block_meta(
@@ -613,7 +616,7 @@ impl RpcServer for RpcServerImpl {
         Ok(info)
     }
 
-    async fn get_rollout(&self, target: usize) -> Result<Vec<(u32, SpaceKey)>, ErrorObjectOwned> {
+    async fn get_rollout(&self, target: usize) -> Result<Vec<RolloutEntry>, ErrorObjectOwned> {
         let rollouts = self
             .store
             .get_rollout(target)
@@ -932,7 +935,7 @@ impl AsyncChainState {
         resp_rx.await?
     }
 
-    pub async fn get_rollout(&self, target: usize) -> anyhow::Result<Vec<(u32, SpaceKey)>> {
+    pub async fn get_rollout(&self, target: usize) -> anyhow::Result<Vec<RolloutEntry>> {
         let (resp, resp_rx) = oneshot::channel();
         self.sender
             .send(ChainStateCommand::GetRollout { target, resp })

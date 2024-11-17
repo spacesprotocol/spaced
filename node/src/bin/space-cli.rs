@@ -11,7 +11,6 @@ use protocol::{
     bitcoin::{Amount, FeeRate, OutPoint, Txid},
     hasher::{KeyHasher},
     slabel::SLabel,
-    Covenant, FullSpaceOut,
 };
 use serde::{Deserialize, Serialize};
 use spaced::{
@@ -153,8 +152,8 @@ enum Commands {
     #[command(name = "balance")]
     Balance,
     /// Pre-create outputs that can be auctioned off during the bidding process
-    #[command(name = "createbidout")]
-    CreateBidOut {
+    #[command(name = "createbidouts")]
+    CreateBidOuts {
         /// Number of output pairs to create
         /// Each pair can be used to make a bid
         pairs: u8,
@@ -177,8 +176,8 @@ enum Commands {
         outpoint: OutPoint,
     },
     /// Get the estimated rollout batch for the specified interval
-    #[command(name = "getrolloutestimate")]
-    GetRolloutEstimate {
+    #[command(name = "getrollout")]
+    GetRollout {
         // Get the estimated rollout for the target interval. Every ~144 blocks (a rollout interval),
         // 10 spaces are released for auction. Specify 0 [default] for the coming interval, 1
         // for the interval after and so on.
@@ -377,44 +376,10 @@ async fn handle_commands(
     command: Commands,
 ) -> std::result::Result<(), ClientError> {
     match command {
-        Commands::GetRolloutEstimate {
+        Commands::GetRollout {
             target_interval: target,
         } => {
-            let hashes = cli.client.get_rollout(target).await?;
-            let mut spaceouts = Vec::with_capacity(hashes.len());
-            for (priority, spacehash) in hashes {
-                let outpoint = cli
-                    .client
-                    .get_space_owner(&hex::encode(spacehash.as_slice()))
-                    .await?;
-
-                if let Some(outpoint) = outpoint {
-                    if let Some(spaceout) = cli.client.get_spaceout(outpoint).await? {
-                        spaceouts.push((
-                            priority,
-                            FullSpaceOut {
-                                txid: outpoint.txid,
-                                spaceout,
-                            },
-                        ));
-                    }
-                }
-            }
-
-            let data: Vec<_> = spaceouts
-                .into_iter()
-                .map(|(priority, spaceout)| {
-                    let space = spaceout.spaceout.space.unwrap();
-                    (
-                        space.name.to_string(),
-                        match space.covenant {
-                            Covenant::Bid { .. } => priority,
-                            _ => 0,
-                        },
-                    )
-                })
-                .collect();
-
+            let data = cli.client.get_rollout(target).await?;
             println!("{}", serde_json::to_string_pretty(&data)?);
         }
         Commands::EstimateBid { target } => {
@@ -486,7 +451,7 @@ async fn handle_commands(
             )
             .await?
         }
-        Commands::CreateBidOut { pairs, fee_rate } => {
+        Commands::CreateBidOuts { pairs, fee_rate } => {
             cli.send_request(None, Some(pairs), fee_rate).await?
         }
         Commands::Register {
