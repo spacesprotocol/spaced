@@ -10,19 +10,21 @@ use std::{
 
 use anyhow::Result;
 use bincode::{config, Decode, Encode};
-use protocol::{
-    bitcoin::OutPoint,
-    constants::{ChainAnchor, ROLLOUT_BATCH_SIZE},
-    hasher::{BidKey, KeyHash, OutpointKey, SpaceKey},
-    prepare::DataSource,
-    FullSpaceOut, SpaceOut,
-};
+use jsonrpsee::core::Serialize;
+use serde::Deserialize;
+use protocol::{bitcoin::OutPoint, constants::{ChainAnchor, ROLLOUT_BATCH_SIZE}, hasher::{BidKey, KeyHash, OutpointKey, SpaceKey}, prepare::DataSource, Covenant, FullSpaceOut, SpaceOut};
 use spacedb::{
     db::{Database, SnapshotIterator},
     fs::FileBackend,
     tx::{KeyIterator, ReadTransaction, WriteTransaction},
     Configuration, Hash, NodeHasher, Sha256Hasher,
 };
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RolloutEntry {
+    pub space: String,
+    pub value: u32
+}
 
 type SpaceDb = Database<Sha256Hasher>;
 type ReadTx = ReadTransaction<Sha256Hasher>;
@@ -256,7 +258,7 @@ impl LiveSnapshot {
             .insert(key, Some(value));
     }
 
-    fn update_snapshot(&mut self, version: u32) -> anyhow::Result<()> {
+    fn update_snapshot(&mut self, version: u32) -> Result<()> {
         if self.snapshot.0 != version {
             self.snapshot.1 = self.db.begin_read()?;
             let anchor: ChainAnchor = self.snapshot.1.metadata().try_into().map_err(|_| {
@@ -315,27 +317,49 @@ impl LiveSnapshot {
         Ok(())
     }
 
-    pub fn estimate_bid(&mut self, target: usize) -> anyhow::Result<u64> {
+    pub fn estimate_bid(&mut self, target: usize) -> Result<u64> {
         let rollout = self.get_rollout(target)?;
         if rollout.is_empty() {
             return Ok(0);
         }
-        let (priority, _) = rollout.last().unwrap();
-        Ok(*priority as u64)
+        let entry = rollout.last().unwrap();
+        Ok(entry.value as u64)
     }
 
-    pub fn get_rollout(&mut self, target: usize) -> anyhow::Result<Vec<(u32, SpaceKey)>> {
+    pub fn get_rollout(&mut self, target: usize) -> Result<Vec<RolloutEntry>> {
         let skip = target * ROLLOUT_BATCH_SIZE;
-        let entries = self.get_rollout_entries(Some(ROLLOUT_BATCH_SIZE), skip)?;
+        let rollouts = self.get_rollout_entries(Some(ROLLOUT_BATCH_SIZE), skip)?;
+        let mut spaceouts = Vec::with_capacity(rollouts.len());
+        for (priority, spacehash) in rollouts {
+            let outpoint = self.get_space_outpoint(&spacehash)?;
+            if let Some(outpoint) = outpoint {
+                if let Some(spaceout) = self.get_spaceout(&outpoint)? {
+                    spaceouts.push((priority, FullSpaceOut { txid: outpoint.txid, spaceout }));
+                }
+            }
+        }
 
-        Ok(entries)
+        let data: Vec<_> = spaceouts
+            .into_iter()
+            .map(|(priority, spaceout)| {
+                let space = spaceout.spaceout.space.unwrap();
+                RolloutEntry {
+                    space: space.name.to_string(),
+                    value: match space.covenant {
+                        Covenant::Bid { .. } => priority,
+                        _ => 0,
+                    },
+                }
+            })
+            .collect();
+        Ok(data)
     }
 
     pub fn get_rollout_entries(
         &mut self,
         limit: Option<usize>,
         skip: usize,
-    ) -> anyhow::Result<Vec<(u32, SpaceKey)>> {
+    ) -> Result<Vec<(u32, SpaceKey)>> {
         // TODO: this could use some clean up
         let rlock = self.staged.read().expect("acquire lock");
         let mut deleted = BTreeSet::new();
@@ -387,10 +411,10 @@ impl LiveSnapshot {
     }
 }
 
-impl protocol::prepare::DataSource for LiveSnapshot {
+impl DataSource for LiveSnapshot {
     fn get_space_outpoint(
         &mut self,
-        space_hash: &protocol::hasher::SpaceKey,
+        space_hash: &SpaceKey,
     ) -> protocol::errors::Result<Option<OutPoint>> {
         let result: Option<EncodableOutpoint> = self
             .get(*space_hash)
