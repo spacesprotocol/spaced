@@ -9,7 +9,7 @@ use jsonrpsee::{
 };
 use protocol::{
     bitcoin::{Amount, FeeRate, OutPoint, Txid},
-    hasher::{KeyHasher, SpaceKey},
+    hasher::{KeyHasher},
     slabel::SLabel,
     Covenant, FullSpaceOut,
 };
@@ -216,18 +216,17 @@ enum Commands {
     /// compatible with most bitcoin wallets
     #[command(name = "getnewaddress")]
     GetCoinAddress,
-    /// Calculate a spacehash from the specified space name
-    #[command(name = "spacehash")]
-    SpaceHash {
-        /// The space name
-        space: String,
-    },
     /// Force spend an output owned by wallet (for testing only)
     #[command(name = "forcespend")]
     ForceSpend {
         outpoint: OutPoint,
         #[arg(long, short)]
         fee_rate: u64,
+    },
+    /// DNS encodes the space and calculates the SHA-256 hash
+    #[command(name = "hashspace")]
+    HashSpace {
+        space: String,
     },
 }
 
@@ -367,11 +366,10 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn space_hash(spaceish: &str) -> anyhow::Result<String> {
+fn hash_space(spaceish: &str) -> anyhow::Result<String> {
     let space = normalize_space(&spaceish);
     let sname = SLabel::from_str(&space)?;
-    let spacehash = SpaceKey::from(Sha256::hash(sname.as_ref()));
-    Ok(hex::encode(spacehash.as_slice()))
+    Ok(hex::encode(Sha256::hash(sname.as_ref())))
 }
 
 async fn handle_commands(
@@ -424,7 +422,7 @@ async fn handle_commands(
             println!("{} sat", Amount::from_sat(response).to_string());
         }
         Commands::GetSpace { space } => {
-            let space_hash = space_hash(&space).map_err(|e| ClientError::Custom(e.to_string()))?;
+            let space_hash = hash_space(&space).map_err(|e| ClientError::Custom(e.to_string()))?;
             let response = cli.client.get_space(&space_hash).await?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
@@ -603,12 +601,6 @@ async fn handle_commands(
                 .await?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
-        Commands::SpaceHash { space } => {
-            println!(
-                "{}",
-                space_hash(&space).map_err(|e| ClientError::Custom(e.to_string()))?
-            );
-        }
         Commands::ForceSpend { outpoint, fee_rate } => {
             let result = cli
                 .client
@@ -619,6 +611,12 @@ async fn handle_commands(
                 )
                 .await?;
             println!("{}", serde_json::to_string_pretty(&result).expect("result"));
+        }
+        Commands::HashSpace { space } => {
+            println!(
+                "{}",
+                hash_space(&space).map_err(|e| ClientError::Custom(e.to_string()))?
+            );
         }
     }
 

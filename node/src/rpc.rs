@@ -32,6 +32,8 @@ use tokio::{
     sync::{broadcast, mpsc, oneshot, RwLock},
     task::JoinSet,
 };
+use protocol::hasher::KeyHasher;
+use protocol::slabel::SLabel;
 use wallet::{
     bdk_wallet as bdk, bdk_wallet::template::Bip86, bitcoin::hashes::Hash, export::WalletExport,
     DoubleUtxo, SpacesWallet, WalletConfig, WalletDescriptors, WalletInfo,
@@ -46,6 +48,7 @@ use crate::{
         AddressKind, Balance, RpcWallet, TxResponse, WalletCommand, WalletOutput, WalletResponse,
     },
 };
+use crate::store::Sha256;
 
 pub(crate) type Responder<T> = oneshot::Sender<T>;
 
@@ -101,11 +104,11 @@ pub trait Rpc {
     async fn get_server_info(&self) -> Result<ServerInfo, ErrorObjectOwned>;
 
     #[method(name = "getspace")]
-    async fn get_space(&self, space_hash: &str) -> Result<Option<FullSpaceOut>, ErrorObjectOwned>;
+    async fn get_space(&self, space_or_hash: &str) -> Result<Option<FullSpaceOut>, ErrorObjectOwned>;
 
     #[method(name = "getspaceowner")]
-    async fn get_space_owner(&self, space_hash: &str)
-        -> Result<Option<OutPoint>, ErrorObjectOwned>;
+    async fn get_space_owner(&self, space_or_hash: &str)
+                             -> Result<Option<OutPoint>, ErrorObjectOwned>;
 
     #[method(name = "getspaceout")]
     async fn get_spaceout(&self, outpoint: OutPoint) -> Result<Option<SpaceOut>, ErrorObjectOwned>;
@@ -172,7 +175,7 @@ pub trait Rpc {
 
     #[method(name = "walletlistspaces")]
     async fn wallet_list_spaces(&self, wallet: &str)
-        -> Result<Vec<WalletOutput>, ErrorObjectOwned>;
+                                -> Result<Vec<WalletOutput>, ErrorObjectOwned>;
 
     #[method(name = "walletlistunspent")]
     async fn wallet_list_unspent(
@@ -567,8 +570,9 @@ impl RpcServer for RpcServerImpl {
         Ok(ServerInfo { chain, tip })
     }
 
-    async fn get_space(&self, space_hash: &str) -> Result<Option<FullSpaceOut>, ErrorObjectOwned> {
-        let space_hash = space_hash_from_string(space_hash)?;
+    async fn get_space(&self, space_or_hash: &str) -> Result<Option<FullSpaceOut>, ErrorObjectOwned> {
+        let space_hash = get_space_key(space_or_hash)?;
+
         let info = self
             .store
             .get_space(space_hash)
@@ -579,9 +583,9 @@ impl RpcServer for RpcServerImpl {
 
     async fn get_space_owner(
         &self,
-        space_hash: &str,
+        space_or_hash: &str,
     ) -> Result<Option<OutPoint>, ErrorObjectOwned> {
-        let space_hash = space_hash_from_string(space_hash)?;
+        let space_hash = get_space_key(space_or_hash)?;
         let info = self
             .store
             .get_space_outpoint(space_hash)
@@ -983,20 +987,29 @@ impl AsyncChainState {
     }
 }
 
-fn space_hash_from_string(space_hash: &str) -> Result<SpaceKey, ErrorObjectOwned> {
+fn get_space_key(space_or_hash: &str) -> Result<SpaceKey, ErrorObjectOwned> {
+    if space_or_hash.len() != 64 {
+        return Ok(
+            SpaceKey::from(
+                Sha256::hash(SLabel::try_from(space_or_hash).map_err(|_| {
+                    ErrorObjectOwned::owned(
+                        -1,
+                        "expected a space name prefixed with @ or a hex encoded space hash",
+                        None::<String>,
+                    )
+                })?.as_ref())
+            )
+        );
+    }
+
     let mut hash = [0u8; 32];
-    hex::decode_to_slice(space_hash, &mut hash).map_err(|_| {
+    hex::decode_to_slice(space_or_hash, &mut hash).map_err(|_| {
         ErrorObjectOwned::owned(
             -1,
-            "expected a 32-byte hex encoded space hash",
+            "expected a space name prefixed with @ or a hex encoded space hash",
             None::<String>,
         )
     })?;
-    SpaceKey::from_raw(hash).map_err(|_| {
-        ErrorObjectOwned::owned(
-            -1,
-            "expected a 32-byte hex encoded space hash",
-            None::<String>,
-        )
-    })
+
+    Ok(SpaceKey::from(hash))
 }
