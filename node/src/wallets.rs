@@ -21,13 +21,14 @@ use tokio::{
 };
 use wallet::{
     address::SpaceAddress,
+    bdk_wallet,
     bdk_wallet::{
-        self,
         chain::{local_chain::CheckPoint, BlockId},
         wallet::tx_builder::TxOrdering,
         KeychainKind, LocalOutput,
     },
-    bitcoin::{self, Address, Amount, FeeRate, OutPoint},
+    bitcoin,
+    bitcoin::{Address, Amount, FeeRate, OutPoint},
     builder::{
         CoinTransfer, SelectionOutput, SpaceTransfer, SpacesAwareCoinSelection, TransactionTag,
         TransferRequest,
