@@ -1,4 +1,4 @@
-use alloc::{collections::btree_map::BTreeMap, vec, vec::Vec};
+use alloc::{vec, vec::Vec};
 
 #[cfg(feature = "bincode")]
 use bincode::{Decode, Encode};
@@ -8,10 +8,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     constants::{AUCTION_DURATION, AUCTION_EXTENSION_ON_BID, RENEWAL_INTERVAL, ROLLOUT_BATCH_SIZE},
-    prepare::{is_magic_lock_time, AuctionedOutput, TrackableOutput, TxContext, SSTXO},
-    script::{OpOpenContext, ScriptError, SpaceKind},
-    sname::SName,
-    BidPsbtReason, Covenant, FullSpaceOut, RejectReason, RevokeReason, Space, SpaceOut,
+    prepare::{AuctionedOutput, TrackableOutput, TxContext, SSTXO},
+    script::{OpenHistory, ScriptError, SpaceScript},
+    slabel::SLabel,
+    BidPsbtReason, Bytes, Covenant, FullSpaceOut, RejectReason, RevokeReason, Space, SpaceOut,
 };
 
 #[derive(Debug, Clone)]
@@ -80,8 +80,7 @@ pub struct RevokeParams {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "bincode", derive(Encode, Decode))]
 pub struct RejectParams {
-    #[cfg_attr(feature = "bincode", bincode(with_serde))]
-    pub name: SName,
+    pub name: SLabel,
 
     #[cfg_attr(feature = "serde", serde(flatten))]
     pub reason: RejectReason,
@@ -114,13 +113,12 @@ impl Validator {
             updates: vec![],
         };
 
-        let mut default_space_data = Vec::new();
-        let mut space_data = BTreeMap::new();
+        let mut space_data = Bytes::new(Vec::new());
         let mut reserve = false;
 
-        for fullspacein in ctx.inputs.into_iter() {
+        for input_ctx in ctx.inputs.into_iter() {
             changeset.spends.push(SpaceIn {
-                n: fullspacein.n,
+                n: input_ctx.n,
                 script_error: None,
             });
 
@@ -129,34 +127,34 @@ impl Validator {
                 height,
                 tx,
                 &mut ctx.auctioned_output,
-                fullspacein.n,
-                fullspacein.sstxo,
+                input_ctx.n,
+                input_ctx.sstxo,
                 &mut changeset,
             );
 
             // Process any space scripts
-            if let Some(script) = fullspacein.script {
-                if script.is_err() {
-                    let last = changeset.spends.last_mut().unwrap();
-                    last.script_error = Some(script.unwrap_err());
-                } else {
-                    let mut script = script.unwrap();
-                    if !script.reserve {
-                        if let Some(open) = script.open {
+            if let Some(script) = input_ctx.script {
+                match script {
+                    Ok(op) => match op {
+                        SpaceScript::Open(open) => {
                             self.process_open(
+                                input_ctx.n,
                                 height,
                                 open,
                                 &mut ctx.auctioned_output,
                                 &mut changeset,
                             );
                         }
-                        if let Some(data) = script.default_sdata {
-                            default_space_data = data;
+                        SpaceScript::Set(data) => {
+                            space_data = Bytes::new(data);
                         }
-                        space_data.append(&mut script.sdata);
-                    } else {
-                        // Script uses reserved op codes
-                        reserve = true;
+                        SpaceScript::Reserve => {
+                            reserve = true;
+                        }
+                    },
+                    Err(script_error) => {
+                        let last = changeset.spends.last_mut().unwrap();
+                        last.script_error = Some(script_error);
                     }
                 }
             }
@@ -164,7 +162,7 @@ impl Validator {
 
         // If one of the input scripts is using reserved op codes
         // then all space outputs with the transfer covenant must be marked as reserved
-        // This does not have an effect on meta outputs
+        // This does not have an effect on meta outputs/updates
         if reserve {
             for out in changeset.creates.iter_mut() {
                 if let Some(space) = out.space.as_mut() {
@@ -175,13 +173,13 @@ impl Validator {
             }
         }
 
-        // Set default space data if any
-        if !default_space_data.is_empty() {
+        // Set space data if any
+        if !space_data.is_empty() {
             changeset.creates.iter_mut().for_each(|output| {
                 if let Some(space) = output.space.as_mut() {
                     match &mut space.covenant {
                         Covenant::Transfer { data, .. } => {
-                            *data = Some(default_space_data.clone());
+                            *data = Some(space_data.clone());
                         }
                         _ => {}
                     }
@@ -189,40 +187,17 @@ impl Validator {
             });
         }
 
-        // Set space specific data
-        if !space_data.is_empty() {
-            for (key, value) in space_data.into_iter() {
-                if let Some(spaceout) = changeset.creates.get_mut(key as usize) {
-                    if let Some(space) = spaceout.space.as_mut() {
-                        match &mut space.covenant {
-                            Covenant::Transfer { data, .. } => {
-                                *data = Some(value);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-        }
-
         // Check if any outputs should be tracked
-        if is_magic_lock_time(&tx.lock_time) {
-            for (n, output) in tx.output.iter().enumerate() {
-                match changeset.creates.iter().find(|x| x.n == n) {
-                    None => {
-                        if output.is_magic_output() {
-                            changeset.creates.push(SpaceOut {
-                                n,
-                                value: output.value,
-                                script_pubkey: output.script_pubkey.clone(),
-                                space: None,
-                            })
-                        }
-                    }
-                    Some(_) => {
-                        // already tracked
-                    }
-                }
+        // we don't check for any special lock times here
+        // as this is a spaces transaction
+        for (n, output) in tx.output.iter().enumerate() {
+            if changeset.creates.iter().all(|x| x.n != n) && output.is_magic_output() {
+                changeset.creates.push(SpaceOut {
+                    n,
+                    value: output.value,
+                    script_pubkey: output.script_pubkey.clone(),
+                    space: None,
+                });
             }
         }
 
@@ -300,19 +275,20 @@ impl Validator {
 
     fn process_open(
         &self,
+        input_index: usize,
         height: u32,
-        open: OpOpenContext,
+        open: OpenHistory,
         auctiond: &mut Option<AuctionedOutput>,
         changeset: &mut TxChangeSet,
     ) {
         let spend_index = changeset
             .spends
             .iter()
-            .position(|s| s.n == open.input_index)
+            .position(|s| s.n == input_index)
             .expect("open must have an input index revealing the space in witness");
 
-        let name = match open.spaceout {
-            SpaceKind::ExistingSpace(mut prev) => {
+        let name = match open {
+            OpenHistory::ExistingSpace(mut prev) => {
                 let prev_space = prev.spaceout.space.as_mut().unwrap();
                 if !prev_space.is_expired(height) {
                     let reject = ScriptError::Reject(RejectParams {
@@ -333,7 +309,7 @@ impl Validator {
                 });
                 prev.spaceout.space.unwrap().name
             }
-            SpaceKind::NewSpace(name) => name,
+            OpenHistory::NewSpace(name) => name,
         };
 
         let mut auctiond = match auctiond.take() {
@@ -402,13 +378,23 @@ impl Validator {
             if spaceout.space.is_none() {
                 return;
             }
-            changeset.updates.push(UpdateOut {
+
+            let revoke = UpdateOut {
                 output: FullSpaceOut {
                     txid: auctioned.bid_psbt.outpoint.txid,
                     spaceout: spaceout.clone(),
                 },
                 kind: UpdateKind::Revoke(RevokeReason::BadSpend),
-            });
+            };
+
+            // check if it's already revoked for some other reason
+            if changeset.updates.iter().any(|update| match update.kind {
+                UpdateKind::Revoke(_) => update.output.outpoint() == revoke.output.outpoint(),
+                _ => false,
+            }) {
+                return;
+            }
+            changeset.updates.push(revoke);
         }
     }
 
@@ -596,7 +582,7 @@ impl Validator {
         tx: &Transaction,
         input_index: usize,
         mut spaceout: SpaceOut,
-        existing_data: Option<Vec<u8>>,
+        existing_data: Option<Bytes>,
         changeset: &mut TxChangeSet,
     ) {
         let input = tx.input.get(input_index).expect("input");

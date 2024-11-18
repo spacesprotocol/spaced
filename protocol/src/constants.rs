@@ -16,6 +16,8 @@ pub struct ChainAnchor {
     pub height: u32,
 }
 
+pub const RESERVED_SPACES: [&'static [u8]; 3] = [b"\x07example", b"\x04test", b"\x04local"];
+
 /// The number of blocks between each rollout of new spaces for auction.
 pub const ROLLOUT_BLOCK_INTERVAL: u32 = 144;
 
@@ -55,16 +57,20 @@ impl ChainAnchor {
         }
     }
 
+    pub const MAINNET: fn() -> Self = || ChainAnchor {
+        hash: BlockHash::all_zeros(),
+        height: 871_222,
+    };
+
+    pub const MAINNET_ALPHA: fn() -> Self = || ChainAnchor {
+        hash: BlockHash::all_zeros(),
+        height: 870_000,
+    };
+
     // Testnet4 activation block
-    pub const TESTNET4: fn() -> Self = || {
-        Self::new(
-            [
-                0x66, 0x02, 0x57, 0xdf, 0x48, 0xcb, 0xd5, 0x82, 0xf0, 0xa8, 0x5d, 0x9e, 0xad, 0x85,
-                0x3d, 0x68, 0x8f, 0x7a, 0x90, 0x0d, 0x56, 0x79, 0xe0, 0x63, 0x08, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-            ],
-            38_580,
-        )
+    pub const TESTNET4: fn() -> Self = || Self {
+        hash: BlockHash::all_zeros(),
+        height: 50_000,
     };
 
     // Testnet activation block
@@ -94,6 +100,8 @@ impl ChainAnchor {
 
 #[cfg(feature = "bincode")]
 pub mod bincode_impl {
+    use alloc::vec::Vec;
+
     use bincode::{
         config,
         de::Decoder,

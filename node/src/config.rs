@@ -73,12 +73,16 @@ pub struct Args {
     /// Listen for JSON-RPC connections on <port>
     #[arg(long, help_heading = Some(RPC_OPTIONS), env = "SPACED_RPC_PORT")]
     rpc_port: Option<u16>,
+    /// Index blocks including the full transaction data
+    #[arg(long, env = "SPACED_BLOCK_INDEX_FULL", default_value = "false")]
+    block_index_full: bool,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, ValueEnum, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ExtendedNetwork {
     Mainnet,
+    MainnetAlpha,
     Testnet,
     Testnet4,
     Signet,
@@ -88,7 +92,7 @@ pub enum ExtendedNetwork {
 impl ExtendedNetwork {
     pub fn fallback_network(&self) -> Network {
         match self {
-            ExtendedNetwork::Mainnet => Network::Bitcoin,
+            ExtendedNetwork::Mainnet | ExtendedNetwork::MainnetAlpha => Network::Bitcoin,
             ExtendedNetwork::Testnet => Network::Testnet,
             ExtendedNetwork::Signet => Network::Signet,
             ExtendedNetwork::Regtest => Network::Regtest,
@@ -100,7 +104,7 @@ impl ExtendedNetwork {
 impl Args {
     /// Configures spaced node by processing command line arguments
     /// and configuration files
-    pub fn configure() -> anyhow::Result<Spaced> {
+    pub async fn configure() -> anyhow::Result<Spaced> {
         let mut args = Args::merge_args_config(None);
         let default_dirs = get_default_node_dirs();
 
@@ -126,9 +130,10 @@ impl Args {
         }
 
         let data_dir = match args.data_dir {
-            None => default_dirs.data_dir().join(args.chain.to_string()),
+            None => default_dirs.data_dir().to_path_buf(),
             Some(data_dir) => data_dir,
-        };
+        }
+        .join(args.chain.to_string());
 
         let default_port = args.rpc_port.unwrap();
         let rpc_bind_addresses: Vec<SocketAddr> = args
@@ -144,7 +149,6 @@ impl Args {
             })
             .collect();
 
-        let genesis = Spaced::genesis(args.chain);
         let bitcoin_rpc_auth = if let Some(cookie) = args.bitcoin_rpc_cookie {
             let cookie = std::fs::read_to_string(cookie)?;
             BitcoinRpcAuth::Cookie(cookie)
@@ -159,6 +163,8 @@ impl Args {
             bitcoin_rpc_auth,
         );
 
+        let genesis = Spaced::genesis(&rpc, args.chain).await?;
+
         fs::create_dir_all(data_dir.clone())?;
 
         let proto_db_path = data_dir.join("protocol.sdb");
@@ -170,7 +176,8 @@ impl Args {
             store: chain_store,
         };
 
-        let block_index = if args.block_index {
+        let block_index_enabled = args.block_index || args.block_index_full;
+        let block_index = if block_index_enabled {
             let block_db_path = data_dir.join("block_index.sdb");
             if !initial_sync && !block_db_path.exists() {
                 return Err(anyhow::anyhow!(
@@ -203,6 +210,7 @@ impl Args {
             bind: rpc_bind_addresses,
             chain,
             block_index,
+            block_index_full: args.block_index_full,
             num_workers: args.jobs as usize,
         })
     }
@@ -259,9 +267,9 @@ pub fn safe_exit(code: i32) -> ! {
     std::process::exit(code)
 }
 
-fn default_bitcoin_rpc_url(network: &ExtendedNetwork) -> &'static str {
+pub fn default_bitcoin_rpc_url(network: &ExtendedNetwork) -> &'static str {
     match network {
-        ExtendedNetwork::Mainnet => "http://127.0.0.1:8332",
+        ExtendedNetwork::Mainnet | ExtendedNetwork::MainnetAlpha => "http://127.0.0.1:8332",
         ExtendedNetwork::Testnet4 => "http://127.0.0.1:48332",
         ExtendedNetwork::Signet => "http://127.0.0.1:38332",
         ExtendedNetwork::Testnet => "http://127.0.0.1:18332",
@@ -359,6 +367,7 @@ impl Display for ExtendedNetwork {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let str = match self {
             ExtendedNetwork::Mainnet => "mainnet".to_string(),
+            ExtendedNetwork::MainnetAlpha => "mainnet-alpha".to_string(),
             ExtendedNetwork::Testnet => "testnet".to_string(),
             ExtendedNetwork::Testnet4 => "testnet4".to_string(),
             ExtendedNetwork::Signet => "signet".to_string(),
@@ -371,6 +380,7 @@ impl Display for ExtendedNetwork {
 pub fn default_spaces_rpc_port(chain: &ExtendedNetwork) -> u16 {
     match chain {
         ExtendedNetwork::Mainnet => 7225,
+        ExtendedNetwork::MainnetAlpha => 7225,
         ExtendedNetwork::Testnet4 => 7224,
         ExtendedNetwork::Testnet => 7223,
         ExtendedNetwork::Signet => 7221,

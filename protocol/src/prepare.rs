@@ -10,7 +10,7 @@ use bitcoin::{
 use crate::{
     errors::Result,
     hasher::{KeyHasher, SpaceKey},
-    script::{ScriptMachine, ScriptResult},
+    script::{ScriptResult, SpaceScript},
     SpaceOut,
 };
 
@@ -30,7 +30,7 @@ pub struct TxContext {
 pub struct InputContext {
     pub n: usize,
     pub sstxo: SSTXO,
-    pub script: Option<ScriptResult<ScriptMachine>>,
+    pub script: Option<ScriptResult<SpaceScript>>,
 }
 
 /// Spent Spaces Transaction Output
@@ -112,7 +112,7 @@ impl TxContext {
 
             // Run any space scripts
             if let Some(script) = input.witness.tapscript() {
-                spacein.script = Some(ScriptMachine::execute::<T, H>(n, src, script)?);
+                spacein.script = SpaceScript::eval::<T, H>(src, script)?;
             }
             inputs.push(spacein)
         }
@@ -188,6 +188,10 @@ pub fn is_magic_lock_time(lock_time: &LockTime) -> bool {
 
 impl TrackableOutput for TxOut {
     fn is_magic_output(&self) -> bool {
-        self.value.to_sat() % 10 == 2
+        is_magic_amount(self.value)
     }
+}
+
+pub fn is_magic_amount(amount: Amount) -> bool {
+    amount.to_sat() % 10 == 2
 }

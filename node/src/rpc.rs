@@ -22,9 +22,9 @@ use protocol::{
         OutPoint,
     },
     constants::ChainAnchor,
-    hasher::{BaseHash, SpaceKey},
+    hasher::{BaseHash, KeyHasher, SpaceKey},
     prepare::DataSource,
-    validate::TxChangeSet,
+    slabel::SLabel,
     FullSpaceOut, SpaceOut,
 };
 use serde::{Deserialize, Serialize};
@@ -40,9 +40,9 @@ use wallet::{
 
 use crate::{
     config::ExtendedNetwork,
-    node::BlockMeta,
+    node::{BlockMeta, TxEntry},
     source::BitcoinRpc,
-    store::{ChainState, LiveSnapshot},
+    store::{ChainState, LiveSnapshot, RolloutEntry, Sha256},
     wallets::{
         AddressKind, Balance, RpcWallet, TxInfo, TxResponse, WalletCommand, WalletOutput,
         WalletResponse,
@@ -76,7 +76,7 @@ pub enum ChainStateCommand {
     },
     GetTxMeta {
         txid: Txid,
-        resp: Responder<anyhow::Result<Option<TxChangeSet>>>,
+        resp: Responder<anyhow::Result<Option<TxEntry>>>,
     },
     GetBlockMeta {
         block_hash: BlockHash,
@@ -88,7 +88,7 @@ pub enum ChainStateCommand {
     },
     GetRollout {
         target: usize,
-        resp: Responder<anyhow::Result<Vec<(u32, SpaceKey)>>>,
+        resp: Responder<anyhow::Result<Vec<RolloutEntry>>>,
     },
 }
 
@@ -103,11 +103,16 @@ pub trait Rpc {
     async fn get_server_info(&self) -> Result<ServerInfo, ErrorObjectOwned>;
 
     #[method(name = "getspace")]
-    async fn get_space(&self, space_hash: &str) -> Result<Option<FullSpaceOut>, ErrorObjectOwned>;
+    async fn get_space(
+        &self,
+        space_or_hash: &str,
+    ) -> Result<Option<FullSpaceOut>, ErrorObjectOwned>;
 
     #[method(name = "getspaceowner")]
-    async fn get_space_owner(&self, space_hash: &str)
-        -> Result<Option<OutPoint>, ErrorObjectOwned>;
+    async fn get_space_owner(
+        &self,
+        space_or_hash: &str,
+    ) -> Result<Option<OutPoint>, ErrorObjectOwned>;
 
     #[method(name = "getspaceout")]
     async fn get_spaceout(&self, outpoint: OutPoint) -> Result<Option<SpaceOut>, ErrorObjectOwned>;
@@ -116,7 +121,7 @@ pub trait Rpc {
     async fn estimate_bid(&self, target: usize) -> Result<u64, ErrorObjectOwned>;
 
     #[method(name = "getrollout")]
-    async fn get_rollout(&self, target: usize) -> Result<Vec<(u32, SpaceKey)>, ErrorObjectOwned>;
+    async fn get_rollout(&self, target: usize) -> Result<Vec<RolloutEntry>, ErrorObjectOwned>;
 
     #[method(name = "getblockmeta")]
     async fn get_block_meta(
@@ -125,7 +130,7 @@ pub trait Rpc {
     ) -> Result<Option<BlockMeta>, ErrorObjectOwned>;
 
     #[method(name = "gettxmeta")]
-    async fn get_tx_meta(&self, txid: Txid) -> Result<Option<TxChangeSet>, ErrorObjectOwned>;
+    async fn get_tx_meta(&self, txid: Txid) -> Result<Option<TxEntry>, ErrorObjectOwned>;
 
     #[method(name = "walletload")]
     async fn wallet_load(&self, name: &str) -> Result<(), ErrorObjectOwned>;
@@ -172,6 +177,14 @@ pub trait Rpc {
         skip: usize,
     ) -> Result<Vec<TxInfo>, ErrorObjectOwned>;
 
+    #[method(name = "walletforcespend")]
+    async fn wallet_force_spend(
+        &self,
+        wallet: &str,
+        outpoint: OutPoint,
+        fee_rate: FeeRate,
+    ) -> Result<TxResponse, ErrorObjectOwned>;
+
     #[method(name = "walletlistspaces")]
     async fn wallet_list_spaces(&self, wallet: &str)
         -> Result<Vec<WalletOutput>, ErrorObjectOwned>;
@@ -182,11 +195,8 @@ pub trait Rpc {
         wallet: &str,
     ) -> Result<Vec<WalletOutput>, ErrorObjectOwned>;
 
-    #[method(name = "walletlistauctionoutputs")]
-    async fn wallet_list_auction_outputs(
-        &self,
-        wallet: &str,
-    ) -> Result<Vec<DoubleUtxo>, ErrorObjectOwned>;
+    #[method(name = "walletlistbidouts")]
+    async fn wallet_list_bidouts(&self, wallet: &str) -> Result<Vec<DoubleUtxo>, ErrorObjectOwned>;
 
     #[method(name = "walletgetbalance")]
     async fn wallet_get_balance(&self, wallet: &str) -> Result<Balance, ErrorObjectOwned>;
@@ -195,7 +205,7 @@ pub trait Rpc {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct RpcWalletTxBuilder {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub auction_outputs: Option<u8>,
+    pub bidouts: Option<u8>,
     pub requests: Vec<RpcWalletRequest>,
     pub fee_rate: Option<FeeRate>,
     pub dust: Option<Amount>,
@@ -234,7 +244,7 @@ pub struct SendCoinsParams {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ExecuteParams {
     pub context: Vec<String>,
-    pub space_script: protocol::script::ScriptBuilder,
+    pub space_script: Vec<u8>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -569,8 +579,12 @@ impl RpcServer for RpcServerImpl {
         Ok(ServerInfo { chain, tip })
     }
 
-    async fn get_space(&self, space_hash: &str) -> Result<Option<FullSpaceOut>, ErrorObjectOwned> {
-        let space_hash = space_hash_from_string(space_hash)?;
+    async fn get_space(
+        &self,
+        space_or_hash: &str,
+    ) -> Result<Option<FullSpaceOut>, ErrorObjectOwned> {
+        let space_hash = get_space_key(space_or_hash)?;
+
         let info = self
             .store
             .get_space(space_hash)
@@ -581,9 +595,9 @@ impl RpcServer for RpcServerImpl {
 
     async fn get_space_owner(
         &self,
-        space_hash: &str,
+        space_or_hash: &str,
     ) -> Result<Option<OutPoint>, ErrorObjectOwned> {
-        let space_hash = space_hash_from_string(space_hash)?;
+        let space_hash = get_space_key(space_or_hash)?;
         let info = self
             .store
             .get_space_outpoint(space_hash)
@@ -611,7 +625,7 @@ impl RpcServer for RpcServerImpl {
         Ok(info)
     }
 
-    async fn get_rollout(&self, target: usize) -> Result<Vec<(u32, SpaceKey)>, ErrorObjectOwned> {
+    async fn get_rollout(&self, target: usize) -> Result<Vec<RolloutEntry>, ErrorObjectOwned> {
         let rollouts = self
             .store
             .get_rollout(target)
@@ -633,7 +647,7 @@ impl RpcServer for RpcServerImpl {
         Ok(data)
     }
 
-    async fn get_tx_meta(&self, txid: Txid) -> Result<Option<TxChangeSet>, ErrorObjectOwned> {
+    async fn get_tx_meta(&self, txid: Txid) -> Result<Option<TxEntry>, ErrorObjectOwned> {
         let data = self
             .store
             .get_tx_meta(txid)
@@ -737,6 +751,19 @@ impl RpcServer for RpcServerImpl {
             .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))
     }
 
+    async fn wallet_force_spend(
+        &self,
+        wallet: &str,
+        outpoint: OutPoint,
+        fee_rate: FeeRate,
+    ) -> Result<TxResponse, ErrorObjectOwned> {
+        self.wallet(&wallet)
+            .await?
+            .send_force_spend(outpoint, fee_rate)
+            .await
+            .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))
+    }
+
     async fn wallet_list_spaces(
         &self,
         wallet: &str,
@@ -759,13 +786,10 @@ impl RpcServer for RpcServerImpl {
             .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))
     }
 
-    async fn wallet_list_auction_outputs(
-        &self,
-        wallet: &str,
-    ) -> Result<Vec<DoubleUtxo>, ErrorObjectOwned> {
+    async fn wallet_list_bidouts(&self, wallet: &str) -> Result<Vec<DoubleUtxo>, ErrorObjectOwned> {
         self.wallet(&wallet)
             .await?
-            .send_list_auction_outputs()
+            .send_list_bidouts()
             .await
             .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))
     }
@@ -790,7 +814,7 @@ impl AsyncChainState {
         client: &reqwest::Client,
         rpc: &BitcoinRpc,
         chain_state: &mut LiveSnapshot,
-    ) -> Result<Option<TxChangeSet>, anyhow::Error> {
+    ) -> Result<Option<TxEntry>, anyhow::Error> {
         let info: serde_json::Value = rpc
             .send_json(client, &rpc.get_raw_transaction(&txid, true))
             .await
@@ -803,7 +827,10 @@ impl AsyncChainState {
         let block = Self::get_indexed_block(index, &block_hash, client, rpc, chain_state).await?;
 
         if let Some(block) = block {
-            return Ok(block.tx_meta.into_iter().find(|tx| &tx.txid == txid));
+            return Ok(block
+                .tx_meta
+                .into_iter()
+                .find(|tx| &tx.changeset.txid == txid));
         }
         Ok(None)
     }
@@ -927,7 +954,7 @@ impl AsyncChainState {
         resp_rx.await?
     }
 
-    pub async fn get_rollout(&self, target: usize) -> anyhow::Result<Vec<(u32, SpaceKey)>> {
+    pub async fn get_rollout(&self, target: usize) -> anyhow::Result<Vec<RolloutEntry>> {
         let (resp, resp_rx) = oneshot::channel();
         self.sender
             .send(ChainStateCommand::GetRollout { target, resp })
@@ -973,7 +1000,7 @@ impl AsyncChainState {
         resp_rx.await?
     }
 
-    pub async fn get_tx_meta(&self, txid: Txid) -> anyhow::Result<Option<TxChangeSet>> {
+    pub async fn get_tx_meta(&self, txid: Txid) -> anyhow::Result<Option<TxEntry>> {
         let (resp, resp_rx) = oneshot::channel();
         self.sender
             .send(ChainStateCommand::GetTxMeta { txid, resp })
@@ -982,20 +1009,29 @@ impl AsyncChainState {
     }
 }
 
-fn space_hash_from_string(space_hash: &str) -> Result<SpaceKey, ErrorObjectOwned> {
+fn get_space_key(space_or_hash: &str) -> Result<SpaceKey, ErrorObjectOwned> {
+    if space_or_hash.len() != 64 {
+        return Ok(SpaceKey::from(Sha256::hash(
+            SLabel::try_from(space_or_hash)
+                .map_err(|_| {
+                    ErrorObjectOwned::owned(
+                        -1,
+                        "expected a space name prefixed with @ or a hex encoded space hash",
+                        None::<String>,
+                    )
+                })?
+                .as_ref(),
+        )));
+    }
+
     let mut hash = [0u8; 32];
-    hex::decode_to_slice(space_hash, &mut hash).map_err(|_| {
+    hex::decode_to_slice(space_or_hash, &mut hash).map_err(|_| {
         ErrorObjectOwned::owned(
             -1,
-            "expected a 32-byte hex encoded space hash",
+            "expected a space name prefixed with @ or a hex encoded space hash",
             None::<String>,
         )
     })?;
-    SpaceKey::from_raw(hash).map_err(|_| {
-        ErrorObjectOwned::owned(
-            -1,
-            "expected a 32-byte hex encoded space hash",
-            None::<String>,
-        )
-    })
+
+    Ok(SpaceKey::from(hash))
 }
