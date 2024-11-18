@@ -159,7 +159,7 @@ impl SpacesWallet {
     }
 
     pub fn get_info(&self) -> WalletInfo {
-        let mut descriptors = Vec::with_capacity(2);
+        let mut descriptors = Vec::with_capacity(4);
 
         descriptors.push(DescriptorInfo {
             descriptor: self

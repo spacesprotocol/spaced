@@ -57,15 +57,6 @@ pub struct TxResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TxInfo {
-    pub txid: Txid,
-    pub confirmed: bool,
-    pub sent: Amount,
-    pub received: Amount,
-    pub fee: Option<Amount>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletResponse {
     pub result: Vec<TxResponse>,
 }
@@ -94,11 +85,6 @@ pub enum WalletCommand {
         txid: Txid,
         fee_rate: FeeRate,
         resp: crate::rpc::Responder<anyhow::Result<Vec<TxResponse>>>,
-    },
-    ListTransactions {
-        count: usize,
-        skip: usize,
-        resp: crate::rpc::Responder<anyhow::Result<Vec<TxInfo>>>,
     },
     ListSpaces {
         resp: crate::rpc::Responder<anyhow::Result<Vec<WalletOutput>>>,
@@ -305,10 +291,6 @@ impl RpcWallet {
             WalletCommand::ListUnspent { resp } => {
                 _ = resp.send(Self::list_unspent(wallet, state));
             }
-            WalletCommand::ListTransactions { count, skip, resp } => {
-                let transactions = Self::list_transactions(wallet, count, skip);
-                _ = resp.send(transactions);
-            }
             WalletCommand::ListSpaces { resp } => {
                 let result = Self::list_unspent(wallet, state);
                 match result {
@@ -464,36 +446,6 @@ impl RpcWallet {
             .collect::<Vec<_>>();
 
         Ok(SpacesAwareCoinSelection::new(excluded, confirmed_only))
-    }
-
-    fn list_transactions(
-        wallet: &mut SpacesWallet,
-        count: usize,
-        skip: usize,
-    ) -> anyhow::Result<Vec<TxInfo>> {
-        let mut transactions: Vec<_> = wallet.spaces.transactions().collect();
-        transactions.sort();
-
-        Ok(transactions
-            .iter()
-            .rev()
-            .skip(skip)
-            .take(count)
-            .map(|ctx| {
-                let tx = ctx.tx_node.tx.clone();
-                let txid = ctx.tx_node.txid.clone();
-                let confirmed = ctx.chain_position.is_confirmed();
-                let (sent, received) = wallet.spaces.sent_and_received(&tx);
-                let fee = wallet.spaces.calculate_fee(&tx).ok();
-                TxInfo {
-                    txid,
-                    confirmed,
-                    sent,
-                    received,
-                    fee,
-                }
-            })
-            .collect())
     }
 
     fn list_unspent(
@@ -928,18 +880,6 @@ impl RpcWallet {
                 fee_rate,
                 resp,
             })
-            .await?;
-        resp_rx.await?
-    }
-
-    pub async fn send_list_transactions(
-        &self,
-        count: usize,
-        skip: usize,
-    ) -> anyhow::Result<Vec<TxInfo>> {
-        let (resp, resp_rx) = oneshot::channel();
-        self.sender
-            .send(WalletCommand::ListTransactions { count, skip, resp })
             .await?;
         resp_rx.await?
     }
