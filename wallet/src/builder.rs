@@ -7,13 +7,16 @@ use std::{
 };
 
 use anyhow::{anyhow, Context};
-use bdk_wallet::{wallet::{
-    coin_selection::{
-        CoinSelectionAlgorithm, CoinSelectionResult, DefaultCoinSelectionAlgorithm, Error,
+use bdk_wallet::{
+    wallet::{
+        coin_selection::{
+            CoinSelectionAlgorithm, CoinSelectionResult, DefaultCoinSelectionAlgorithm, Error,
+        },
+        error::CreateTxError,
+        tx_builder::TxOrdering,
     },
-    tx_builder::TxOrdering,
-}, KeychainKind, TxBuilder, Utxo, WeightedUtxo};
-use bdk_wallet::wallet::error::CreateTxError;
+    KeychainKind, TxBuilder, Utxo, WeightedUtxo,
+};
 use bitcoin::{
     absolute::LockTime, psbt, psbt::Input, script, script::PushBytesBuf, Address, Amount, FeeRate,
     Network, OutPoint, Psbt, Script, ScriptBuf, Sequence, Transaction, TxOut, Txid, Witness,
@@ -230,7 +233,7 @@ impl<'a, Cs: CoinSelectionAlgorithm> TxBuilderSpacesUtils<'a, Cs> for TxBuilder<
             placeholder.auction.outpoint.vout as u8,
             &offer,
         )?)
-            .expect("compressed psbt script bytes");
+        .expect("compressed psbt script bytes");
 
         let carrier = ScriptBuf::new_op_return(&compressed_psbt);
 
@@ -369,9 +372,7 @@ impl Builder {
         }
 
         let commit_psbt = {
-            let mut builder = w.spaces
-                .build_tx()
-                .coin_selection(coin_selection);
+            let mut builder = w.spaces.build_tx().coin_selection(coin_selection);
             builder.nlocktime(magic_lock_time(median_time));
 
             builder.ordering(TxOrdering::Untouched);
@@ -809,9 +810,7 @@ impl Builder {
     ) -> anyhow::Result<Transaction> {
         let (offer, placeholder) = w.new_bid_psbt(bid, &coin_selection)?;
         let bid_psbt = {
-            let mut builder = w.spaces
-                .build_tx()
-                .coin_selection(coin_selection);
+            let mut builder = w.spaces.build_tx().coin_selection(coin_selection);
             builder
                 .ordering(TxOrdering::Untouched)
                 .nlocktime(LockTime::Blocks(Height::ZERO))
@@ -842,9 +841,7 @@ impl Builder {
         let (offer, placeholder) = w.new_bid_psbt(params.amount, &coin_selection)?;
         let mut extra_prevouts = BTreeMap::new();
         let open_psbt = {
-            let mut builder = w.spaces
-                .build_tx()
-                .coin_selection(coin_selection);
+            let mut builder = w.spaces.build_tx().coin_selection(coin_selection);
             builder.ordering(TxOrdering::Untouched).add_bid(
                 None,
                 offer,
@@ -879,9 +876,7 @@ impl Builder {
                 .spaces
                 .next_unused_address(KeychainKind::Internal)
                 .script_pubkey();
-            let mut builder = w.spaces
-                .build_tx()
-                .coin_selection(coin_selection);
+            let mut builder = w.spaces.build_tx().coin_selection(coin_selection);
 
             builder
                 .ordering(TxOrdering::Untouched)
@@ -982,8 +977,10 @@ impl CoinSelectionAlgorithm for SpacesAwareCoinSelection {
             }
 
             weighted_utxo.utxo.txout().value > SpacesAwareCoinSelection::DUST_THRESHOLD
-                && !self.exclude_outputs
-                .iter().any(|o| o.outpoint == weighted_utxo.utxo.outpoint())
+                && !self
+                    .exclude_outputs
+                    .iter()
+                    .any(|o| o.outpoint == weighted_utxo.utxo.outpoint())
         });
 
         let mut result = self.default_algorithm.coin_select(

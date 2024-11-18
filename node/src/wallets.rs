@@ -1,9 +1,18 @@
 use std::{collections::BTreeMap, str::FromStr, time::Duration};
+
 use anyhow::anyhow;
 use clap::ValueEnum;
 use futures::{stream::FuturesUnordered, StreamExt};
 use log::{info, warn};
-use protocol::{bitcoin::Txid, constants::ChainAnchor, hasher::{KeyHasher, SpaceKey}, prepare::DataSource, script::SpaceScript, slabel::SLabel, FullSpaceOut, Space};
+use protocol::{
+    bitcoin::Txid,
+    constants::ChainAnchor,
+    hasher::{KeyHasher, SpaceKey},
+    prepare::DataSource,
+    script::SpaceScript,
+    slabel::SLabel,
+    FullSpaceOut, Space,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::{
@@ -15,17 +24,18 @@ use wallet::{
     bdk_wallet,
     bdk_wallet::{
         chain::{local_chain::CheckPoint, BlockId},
+        wallet::tx_builder::TxOrdering,
         KeychainKind, LocalOutput,
     },
     bitcoin,
     bitcoin::{Address, Amount, FeeRate, OutPoint},
     builder::{
-        CoinTransfer, SpaceTransfer, SpacesAwareCoinSelection, TransactionTag, TransferRequest,
+        CoinTransfer, SelectionOutput, SpaceTransfer, SpacesAwareCoinSelection, TransactionTag,
+        TransferRequest,
     },
     DoubleUtxo, SpacesWallet, WalletInfo,
 };
-use wallet::bdk_wallet::wallet::tx_builder::TxOrdering;
-use wallet::builder::SelectionOutput;
+
 use crate::{
     config::ExtendedNetwork,
     node::BlockSource,
@@ -45,7 +55,6 @@ pub struct TxResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw: Option<String>,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletResponse {
@@ -176,11 +185,11 @@ impl RpcWallet {
         fee_rate: FeeRate,
     ) -> anyhow::Result<Vec<TxResponse>> {
         let coin_selection = Self::get_spaces_coin_selection(
-            wallet,
-            state,
-            false /* generally bdk won't use unconfirmed for replacements anyways */
+            wallet, state,
+            false, /* generally bdk won't use unconfirmed for replacements anyways */
         )?;
-        let mut builder = wallet.spaces
+        let mut builder = wallet
+            .spaces
             .build_fee_bump(txid)?
             .coin_selection(coin_selection);
 
@@ -212,13 +221,9 @@ impl RpcWallet {
         output: OutPoint,
         fee_rate: FeeRate,
     ) -> anyhow::Result<TxResponse> {
-        let coin_selection =
-            Self::get_spaces_coin_selection(wallet, state, true)?;
+        let coin_selection = Self::get_spaces_coin_selection(wallet, state, true)?;
         let addre = wallet.spaces.next_unused_address(KeychainKind::External);
-        let mut builder = wallet
-            .spaces
-            .build_tx()
-            .coin_selection(coin_selection);
+        let mut builder = wallet.spaces.build_tx().coin_selection(coin_selection);
 
         builder.ordering(TxOrdering::Untouched);
         builder.fee_rate(fee_rate);
@@ -268,7 +273,8 @@ impl RpcWallet {
                 fee_rate,
                 resp,
             } => {
-                let result = Self::handle_force_spend_output(source, &mut state, wallet, outpoint, fee_rate);
+                let result =
+                    Self::handle_force_spend_output(source, &mut state, wallet, outpoint, fee_rate);
                 _ = resp.send(result);
             }
             WalletCommand::GetNewAddress { kind, resp } => {
@@ -300,8 +306,7 @@ impl RpcWallet {
                 }
             }
             WalletCommand::ListBidouts { resp } => {
-                let sel =
-                    Self::get_spaces_coin_selection(wallet, state, false)?;
+                let sel = Self::get_spaces_coin_selection(wallet, state, false)?;
                 let result = wallet.list_bidouts(&sel);
                 _ = resp.send(result);
             }
@@ -505,13 +510,16 @@ impl RpcWallet {
 
     fn replaces_unconfirmed_bid(wallet: &SpacesWallet, bid_spaceout: &FullSpaceOut) -> bool {
         let outpoint = bid_spaceout.outpoint();
-        wallet.spaces.transactions().filter(
-            |tx|
-                !tx.chain_position.is_confirmed()
-        ).any(
-            |tx|
-                tx.tx_node.input.iter().any(|input| input.previous_output == outpoint)
-        )
+        wallet
+            .spaces
+            .transactions()
+            .filter(|tx| !tx.chain_position.is_confirmed())
+            .any(|tx| {
+                tx.tx_node
+                    .input
+                    .iter()
+                    .any(|input| input.previous_output == outpoint)
+            })
     }
 
     fn batch_tx(
@@ -745,7 +753,8 @@ impl RpcWallet {
                                 error_data.insert(
                                     "hint".to_string(),
                                     "Competing bid in mempool but wallet has no confirmed bid \
-                                    outputs (required to replace mempool bids)".to_string(),
+                                    outputs (required to replace mempool bids)"
+                                        .to_string(),
                                 );
                             }
 
@@ -773,9 +782,7 @@ impl RpcWallet {
             }
         }
 
-        Ok(WalletResponse {
-            result: result_set,
-        })
+        Ok(WalletResponse { result: result_set })
     }
 
     pub async fn service(

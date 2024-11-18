@@ -220,7 +220,10 @@ impl SpacesWallet {
     }
 
     /// List outputs that can be safely auctioned off
-    pub fn list_bidouts(&mut self, selection: &SpacesAwareCoinSelection) -> anyhow::Result<Vec<DoubleUtxo>> {
+    pub fn list_bidouts(
+        &mut self,
+        selection: &SpacesAwareCoinSelection,
+    ) -> anyhow::Result<Vec<DoubleUtxo>> {
         let mut unspent: Vec<LocalOutput> = self.spaces.list_unspent().collect();
         let mut not_auctioned = vec![];
 
@@ -290,7 +293,11 @@ impl SpacesWallet {
         Ok(not_auctioned)
     }
 
-    pub fn new_bid_psbt(&mut self, total_burned: Amount, selection: &SpacesAwareCoinSelection) -> anyhow::Result<(Psbt, DoubleUtxo)> {
+    pub fn new_bid_psbt(
+        &mut self,
+        total_burned: Amount,
+        selection: &SpacesAwareCoinSelection,
+    ) -> anyhow::Result<(Psbt, DoubleUtxo)> {
         let all: Vec<_> = self.list_bidouts(selection)?;
 
         let msg = if selection.confirmed_only {
@@ -490,7 +497,7 @@ impl SpacesWallet {
                     signature,
                     sighash_type,
                 }
-                    .to_vec(),
+                .to_vec(),
             );
             witness.push(&signing_info.script);
             witness.push(&signing_info.control_block.serialize());

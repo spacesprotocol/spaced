@@ -9,7 +9,7 @@ use jsonrpsee::{
 };
 use protocol::{
     bitcoin::{Amount, FeeRate, OutPoint, Txid},
-    hasher::{KeyHasher},
+    hasher::KeyHasher,
     slabel::SLabel,
 };
 use serde::{Deserialize, Serialize};
@@ -224,9 +224,7 @@ enum Commands {
     },
     /// DNS encodes the space and calculates the SHA-256 hash
     #[command(name = "hashspace")]
-    HashSpace {
-        space: String,
-    },
+    HashSpace { space: String },
 }
 
 struct SpaceCli {
@@ -395,7 +393,7 @@ async fn handle_commands(
             let response = cli.client.get_spaceout(outpoint).await?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
-        Commands::CreateWallet  => {
+        Commands::CreateWallet => {
             cli.client.wallet_create(&cli.wallet).await?;
         }
         Commands::LoadWallet => {
@@ -410,10 +408,11 @@ async fn handle_commands(
         Commands::ExportWallet { path } => {
             let result = cli.client.wallet_export(&cli.wallet).await?;
             let content = serde_json::to_string_pretty(&result).expect("result");
-            fs::write(path, content).map_err(|e|
-                ClientError::Custom(format!("Could not save to path: {}", e.to_string())))?;
+            fs::write(path, content).map_err(|e| {
+                ClientError::Custom(format!("Could not save to path: {}", e.to_string()))
+            })?;
         }
-        Commands::GetWalletInfo  => {
+        Commands::GetWalletInfo => {
             let result = cli.client.wallet_get_info(&cli.wallet).await?;
             println!("{}", serde_json::to_string_pretty(&result).expect("result"));
         }

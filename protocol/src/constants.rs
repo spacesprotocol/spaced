@@ -68,11 +68,9 @@ impl ChainAnchor {
     };
 
     // Testnet4 activation block
-    pub const TESTNET4: fn() -> Self = || {
-        Self {
-            hash: BlockHash::all_zeros(),
-            height: 50_000,
-        }
+    pub const TESTNET4: fn() -> Self = || Self {
+        hash: BlockHash::all_zeros(),
+        height: 50_000,
     };
 
     // Testnet activation block
