@@ -12,6 +12,7 @@ use serde::{de::Error as ErrorUtil, Deserialize, Deserializer, Serialize, Serial
 use crate::errors::Error;
 
 pub const MAX_LABEL_LEN: usize = 62;
+pub const PUNYCODE_PREFIX: &[u8] = b"xn--";
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SLabel([u8; MAX_LABEL_LEN + 1]);
@@ -153,22 +154,35 @@ impl<'a> TryFrom<&'a [u8]> for SLabelRef<'a> {
         if value.is_empty() {
             return Err(Error::Name(NameErrorKind::Empty));
         }
-        let label_len = value[0] as usize;
-        if label_len == 0 {
+        let len = value[0] as usize;
+        if len == 0 {
             return Err(Error::Name(NameErrorKind::ZeroLength));
         }
-        if label_len > MAX_LABEL_LEN {
+        if len > MAX_LABEL_LEN {
             return Err(Error::Name(NameErrorKind::TooLong));
         }
-        if label_len + 1 > value.len() {
+        if len + 1 > value.len() {
             return Err(Error::Name(NameErrorKind::EOF));
         }
-        let label = &value[..=label_len];
-        if !label[1..]
-            .iter()
-            .all(|&b| b.is_ascii_lowercase() || b.is_ascii_digit())
-        {
+        let label = &value[..=len];
+        let mut verify_range = &label[1..];
+        if verify_range.starts_with(PUNYCODE_PREFIX) && len > PUNYCODE_PREFIX.len() {
+            verify_range = &verify_range[PUNYCODE_PREFIX.len()..]
+        }
+
+        if verify_range[0] == b'-' || verify_range[verify_range.len() - 1] == b'-' {
             return Err(Error::Name(NameErrorKind::InvalidCharacter));
+        }
+        let mut prev: u8 = 0;
+        for c in verify_range {
+            match c {
+                b'-' if prev == b'-' => return Err(Error::Name(NameErrorKind::InvalidCharacter)),
+                b'a'..=b'z' | b'0'..=b'9' | b'-' => {
+                    prev = *c;
+                    continue;
+                }
+                _ => return Err(Error::Name(NameErrorKind::InvalidCharacter)),
+            }
         }
         Ok(SLabelRef(label))
     }
@@ -196,16 +210,11 @@ impl TryFrom<&str> for SLabel {
         if label.len() > MAX_LABEL_LEN {
             return Err(Error::Name(NameErrorKind::TooLong));
         }
-        if !label
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-        {
-            return Err(Error::Name(NameErrorKind::InvalidCharacter));
-        }
         let mut label_bytes = [0; MAX_LABEL_LEN + 1];
         label_bytes[0] = label.len() as u8;
         label_bytes[1..=label.len()].copy_from_slice(label.as_bytes());
-        Ok(SLabel(label_bytes))
+
+        SLabel::try_from(label_bytes.as_slice())
     }
 }
 
@@ -288,13 +297,50 @@ mod tests {
             "Should fail if label contains invalid characters"
         );
         assert!(
-            SLabel::try_from("@example-ok").is_err(),
-            "Should fail if label contains hyphens"
+            SLabel::try_from("@example-ok").is_ok(),
+            "Should work with single hyphens"
+        );
+        assert!(
+            SLabel::try_from("@example-ok-ok2-ok3").is_ok(),
+            "Multiple non consecutive hyphens should work"
+        );
+        assert!(
+            SLabel::try_from("@example--ok").is_err(),
+            "Should not work with double hyphens"
+        );
+        assert!(
+            SLabel::try_from("@-ok").is_err(),
+            "Should not work with hyphens start"
+        );
+        assert!(
+            SLabel::try_from("@ok-").is_err(),
+            "Should not work with hyphens at end"
+        );
+        assert!(
+            SLabel::try_from("@xn--").is_err(),
+            "Should not work with empty punycode"
+        );
+        assert!(
+            SLabel::try_from("@xn---").is_err(),
+            "Should not work with single hyphen punycode"
+        );
+        assert!(
+            SLabel::try_from("@xn--1").is_ok(),
+            "Should be okay"
+        );
+        assert!(
+            SLabel::try_from("@0xn--1").is_err(),
+            "Should not be okay"
+        );
+        assert!(
+            SLabel::try_from("@xn--123-pretty-valid-space-ok").is_ok(),
+            "Should work :("
         );
         assert!(
             SLabel::try_from(b"\x07exam").is_err(),
             "Should fail if buffer is too short"
         );
+
         assert_eq!(
             SLabel::try_from(b"\x02exam").unwrap().to_string(),
             "@ex",
@@ -303,6 +349,12 @@ mod tests {
         assert_eq!(
             SLabel::try_from(b"\x02exam").unwrap().as_ref(),
             b"\x02ex",
+            "Should work"
+        );
+
+        assert_eq!(
+            SLabel::try_from(b"\x14xn--hello-world-1234-five-six-seven").unwrap().as_ref(),
+            b"\x14xn--hello-world-1234",
             "Should work"
         );
     }
@@ -373,5 +425,34 @@ mod tests {
                 "Deserialization should produce the original label"
             );
         }
+    }
+
+    #[test]
+    fn test_empty_and_null_cases() {
+        assert!(SLabel::try_from("").is_err());
+        assert!(SLabel::try_from("@").is_err());
+        assert!(SLabel::try_from(b"").is_err());
+        assert!(SLabel::try_from(b"\x00").is_err());
+    }
+
+    #[test]
+    fn test_unicode_and_special_chars() {
+        assert!(SLabel::try_from("@café").is_err());
+        assert!(SLabel::try_from("@test\x00test").is_err());
+        assert!(SLabel::try_from("@test\ntest").is_err());
+    }
+
+    #[test]
+    fn test_edge_length_cases() {
+        assert!(SLabel::try_from(b"\xff").is_err()); // Length byte but no content
+        assert!(SLabel::try_from(b"\x01").is_err()); // Length byte claims 1 but no content
+    }
+
+    #[test]
+    fn test_punycode_edge_cases() {
+        assert!(SLabel::try_from("@xn").is_ok());
+        assert!(SLabel::try_from("@xn-").is_err());
+        assert!(SLabel::try_from("@xn--").is_err());
+        assert!(SLabel::try_from("@xxn--test").is_err());
     }
 }
