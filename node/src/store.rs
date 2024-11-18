@@ -11,8 +11,14 @@ use std::{
 use anyhow::Result;
 use bincode::{config, Decode, Encode};
 use jsonrpsee::core::Serialize;
+use protocol::{
+    bitcoin::OutPoint,
+    constants::{ChainAnchor, ROLLOUT_BATCH_SIZE},
+    hasher::{BidKey, KeyHash, OutpointKey, SpaceKey},
+    prepare::DataSource,
+    Covenant, FullSpaceOut, SpaceOut,
+};
 use serde::Deserialize;
-use protocol::{bitcoin::OutPoint, constants::{ChainAnchor, ROLLOUT_BATCH_SIZE}, hasher::{BidKey, KeyHash, OutpointKey, SpaceKey}, prepare::DataSource, Covenant, FullSpaceOut, SpaceOut};
 use spacedb::{
     db::{Database, SnapshotIterator},
     fs::FileBackend,
@@ -23,7 +29,7 @@ use spacedb::{
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RolloutEntry {
     pub space: String,
-    pub value: u32
+    pub value: u32,
 }
 
 type SpaceDb = Database<Sha256Hasher>;
@@ -334,7 +340,13 @@ impl LiveSnapshot {
             let outpoint = self.get_space_outpoint(&spacehash)?;
             if let Some(outpoint) = outpoint {
                 if let Some(spaceout) = self.get_spaceout(&outpoint)? {
-                    spaceouts.push((priority, FullSpaceOut { txid: outpoint.txid, spaceout }));
+                    spaceouts.push((
+                        priority,
+                        FullSpaceOut {
+                            txid: outpoint.txid,
+                            spaceout,
+                        },
+                    ));
                 }
             }
         }

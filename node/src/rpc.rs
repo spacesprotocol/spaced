@@ -1,4 +1,3 @@
-use crate::store::RolloutEntry;
 use std::{
     collections::BTreeMap, fs, io::Write, net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc,
 };
@@ -23,8 +22,9 @@ use protocol::{
         OutPoint,
     },
     constants::ChainAnchor,
-    hasher::{BaseHash, SpaceKey},
+    hasher::{BaseHash, KeyHasher, SpaceKey},
     prepare::DataSource,
+    slabel::SLabel,
     FullSpaceOut, SpaceOut,
 };
 use serde::{Deserialize, Serialize};
@@ -33,8 +33,6 @@ use tokio::{
     sync::{broadcast, mpsc, oneshot, RwLock},
     task::JoinSet,
 };
-use protocol::hasher::KeyHasher;
-use protocol::slabel::SLabel;
 use wallet::{
     bdk_wallet as bdk, bdk_wallet::template::Bip86, bitcoin::hashes::Hash, export::WalletExport,
     DoubleUtxo, SpacesWallet, WalletConfig, WalletDescriptors, WalletInfo,
@@ -44,12 +42,11 @@ use crate::{
     config::ExtendedNetwork,
     node::{BlockMeta, TxEntry},
     source::BitcoinRpc,
-    store::{ChainState, LiveSnapshot},
+    store::{ChainState, LiveSnapshot, RolloutEntry, Sha256},
     wallets::{
         AddressKind, Balance, RpcWallet, TxResponse, WalletCommand, WalletOutput, WalletResponse,
     },
 };
-use crate::store::Sha256;
 
 pub(crate) type Responder<T> = oneshot::Sender<T>;
 
@@ -58,8 +55,6 @@ pub struct ServerInfo {
     pub chain: ExtendedNetwork,
     pub tip: ChainAnchor,
 }
-
-
 
 pub enum ChainStateCommand {
     GetTip {
@@ -107,11 +102,16 @@ pub trait Rpc {
     async fn get_server_info(&self) -> Result<ServerInfo, ErrorObjectOwned>;
 
     #[method(name = "getspace")]
-    async fn get_space(&self, space_or_hash: &str) -> Result<Option<FullSpaceOut>, ErrorObjectOwned>;
+    async fn get_space(
+        &self,
+        space_or_hash: &str,
+    ) -> Result<Option<FullSpaceOut>, ErrorObjectOwned>;
 
     #[method(name = "getspaceowner")]
-    async fn get_space_owner(&self, space_or_hash: &str)
-                             -> Result<Option<OutPoint>, ErrorObjectOwned>;
+    async fn get_space_owner(
+        &self,
+        space_or_hash: &str,
+    ) -> Result<Option<OutPoint>, ErrorObjectOwned>;
 
     #[method(name = "getspaceout")]
     async fn get_spaceout(&self, outpoint: OutPoint) -> Result<Option<SpaceOut>, ErrorObjectOwned>;
@@ -178,7 +178,7 @@ pub trait Rpc {
 
     #[method(name = "walletlistspaces")]
     async fn wallet_list_spaces(&self, wallet: &str)
-                                -> Result<Vec<WalletOutput>, ErrorObjectOwned>;
+        -> Result<Vec<WalletOutput>, ErrorObjectOwned>;
 
     #[method(name = "walletlistunspent")]
     async fn wallet_list_unspent(
@@ -186,11 +186,8 @@ pub trait Rpc {
         wallet: &str,
     ) -> Result<Vec<WalletOutput>, ErrorObjectOwned>;
 
-    #[method(name = "walletlistauctionoutputs")]
-    async fn wallet_list_auction_outputs(
-        &self,
-        wallet: &str,
-    ) -> Result<Vec<DoubleUtxo>, ErrorObjectOwned>;
+    #[method(name = "walletlistbidouts")]
+    async fn wallet_list_bidouts(&self, wallet: &str) -> Result<Vec<DoubleUtxo>, ErrorObjectOwned>;
 
     #[method(name = "walletgetbalance")]
     async fn wallet_get_balance(&self, wallet: &str) -> Result<Balance, ErrorObjectOwned>;
@@ -199,7 +196,7 @@ pub trait Rpc {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct RpcWalletTxBuilder {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub auction_outputs: Option<u8>,
+    pub bidouts: Option<u8>,
     pub requests: Vec<RpcWalletRequest>,
     pub fee_rate: Option<FeeRate>,
     pub dust: Option<Amount>,
@@ -573,7 +570,10 @@ impl RpcServer for RpcServerImpl {
         Ok(ServerInfo { chain, tip })
     }
 
-    async fn get_space(&self, space_or_hash: &str) -> Result<Option<FullSpaceOut>, ErrorObjectOwned> {
+    async fn get_space(
+        &self,
+        space_or_hash: &str,
+    ) -> Result<Option<FullSpaceOut>, ErrorObjectOwned> {
         let space_hash = get_space_key(space_or_hash)?;
 
         let info = self
@@ -764,13 +764,10 @@ impl RpcServer for RpcServerImpl {
             .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))
     }
 
-    async fn wallet_list_auction_outputs(
-        &self,
-        wallet: &str,
-    ) -> Result<Vec<DoubleUtxo>, ErrorObjectOwned> {
+    async fn wallet_list_bidouts(&self, wallet: &str) -> Result<Vec<DoubleUtxo>, ErrorObjectOwned> {
         self.wallet(&wallet)
             .await?
-            .send_list_auction_outputs()
+            .send_list_bidouts()
             .await
             .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))
     }
@@ -992,17 +989,17 @@ impl AsyncChainState {
 
 fn get_space_key(space_or_hash: &str) -> Result<SpaceKey, ErrorObjectOwned> {
     if space_or_hash.len() != 64 {
-        return Ok(
-            SpaceKey::from(
-                Sha256::hash(SLabel::try_from(space_or_hash).map_err(|_| {
+        return Ok(SpaceKey::from(Sha256::hash(
+            SLabel::try_from(space_or_hash)
+                .map_err(|_| {
                     ErrorObjectOwned::owned(
                         -1,
                         "expected a space name prefixed with @ or a hex encoded space hash",
                         None::<String>,
                     )
-                })?.as_ref())
-            )
-        );
+                })?
+                .as_ref(),
+        )));
     }
 
     let mut hash = [0u8; 32];

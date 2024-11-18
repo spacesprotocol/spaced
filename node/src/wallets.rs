@@ -11,7 +11,7 @@ use protocol::{
     prepare::DataSource,
     script::SpaceScript,
     slabel::SLabel,
-    Space,
+    FullSpaceOut, Space,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -24,16 +24,18 @@ use wallet::{
     bdk_wallet,
     bdk_wallet::{
         chain::{local_chain::CheckPoint, BlockId},
+        wallet::tx_builder::TxOrdering,
         KeychainKind, LocalOutput,
     },
     bitcoin,
     bitcoin::{Address, Amount, FeeRate, OutPoint},
     builder::{
-        CoinTransfer, SpaceTransfer, SpacesAwareCoinSelection, TransactionTag, TransferRequest,
+        CoinTransfer, SelectionOutput, SpaceTransfer, SpacesAwareCoinSelection, TransactionTag,
+        TransferRequest,
     },
     DoubleUtxo, SpacesWallet, WalletInfo,
 };
-use wallet::bdk_wallet::wallet::tx_builder::TxOrdering;
+
 use crate::{
     config::ExtendedNetwork,
     node::BlockSource,
@@ -46,17 +48,17 @@ use crate::{
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TxResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<BTreeMap<String, String>>,
     pub txid: Txid,
     pub tags: Vec<TransactionTag>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<BTreeMap<String, String>>,
+    pub raw: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletResponse {
-    pub sent: Vec<TxResponse>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub raw: Option<Vec<String>>,
+    pub result: Vec<TxResponse>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,7 +89,7 @@ pub enum WalletCommand {
     ListSpaces {
         resp: crate::rpc::Responder<anyhow::Result<Vec<WalletOutput>>>,
     },
-    ListAuctionOutputs {
+    ListBidouts {
         resp: crate::rpc::Responder<anyhow::Result<Vec<DoubleUtxo>>>,
     },
     ListUnspent {
@@ -182,8 +184,12 @@ impl RpcWallet {
         txid: Txid,
         fee_rate: FeeRate,
     ) -> anyhow::Result<Vec<TxResponse>> {
-        let coin_selection = Self::get_spaces_coin_selection(wallet, state)?;
-        let mut builder = wallet.spaces
+        let coin_selection = Self::get_spaces_coin_selection(
+            wallet, state,
+            false, /* generally bdk won't use unconfirmed for replacements anyways */
+        )?;
+        let mut builder = wallet
+            .spaces
             .build_fee_bump(txid)?
             .coin_selection(coin_selection);
 
@@ -204,6 +210,7 @@ impl RpcWallet {
             txid: new_txid,
             tags: vec![TransactionTag::FeeBump],
             error: None,
+            raw: None,
         }])
     }
 
@@ -214,12 +221,9 @@ impl RpcWallet {
         output: OutPoint,
         fee_rate: FeeRate,
     ) -> anyhow::Result<TxResponse> {
-        let coin_selection = Self::get_spaces_coin_selection(wallet, state)?;
+        let coin_selection = Self::get_spaces_coin_selection(wallet, state, true)?;
         let addre = wallet.spaces.next_unused_address(KeychainKind::External);
-        let mut builder = wallet
-            .spaces
-            .build_tx()
-            .coin_selection(coin_selection);
+        let mut builder = wallet.spaces.build_tx().coin_selection(coin_selection);
 
         builder.ordering(TxOrdering::Untouched);
         builder.fee_rate(fee_rate);
@@ -239,6 +243,7 @@ impl RpcWallet {
             txid,
             tags: vec![TransactionTag::ForceSpendTestOnly],
             error: None,
+            raw: None,
         })
     }
 
@@ -268,7 +273,8 @@ impl RpcWallet {
                 fee_rate,
                 resp,
             } => {
-                let result = Self::handle_force_spend_output(source, &mut state, wallet, outpoint, fee_rate);
+                let result =
+                    Self::handle_force_spend_output(source, &mut state, wallet, outpoint, fee_rate);
                 _ = resp.send(result);
             }
             WalletCommand::GetNewAddress { kind, resp } => {
@@ -299,8 +305,9 @@ impl RpcWallet {
                     }
                 }
             }
-            WalletCommand::ListAuctionOutputs { resp } => {
-                let result = wallet.list_auction_outputs();
+            WalletCommand::ListBidouts { resp } => {
+                let sel = Self::get_spaces_coin_selection(wallet, state, false)?;
+                let result = wallet.list_bidouts(&sel);
                 _ = resp.send(result);
             }
             WalletCommand::GetBalance { resp } => {
@@ -422,6 +429,7 @@ impl RpcWallet {
     fn get_spaces_coin_selection(
         wallet: &mut SpacesWallet,
         state: &mut LiveSnapshot,
+        confirmed_only: bool,
     ) -> anyhow::Result<SpacesAwareCoinSelection> {
         // Filters out all "space outs" from the selection.
         // Note: This exclusion only applies to confirmed space outs; unconfirmed ones are not excluded.
@@ -430,10 +438,14 @@ impl RpcWallet {
         let excluded = Self::list_unspent(wallet, state)?
             .into_iter()
             .filter(|out| out.is_spaceout)
-            .map(|out| out.output.outpoint)
+            .map(|out| SelectionOutput {
+                outpoint: out.output.outpoint,
+                is_space: out.space.is_some(),
+                is_spaceout: true,
+            })
             .collect::<Vec<_>>();
 
-        Ok(SpacesAwareCoinSelection::new(excluded))
+        Ok(SpacesAwareCoinSelection::new(excluded, confirmed_only))
     }
 
     fn list_unspent(
@@ -496,6 +508,20 @@ impl RpcWallet {
         )?))
     }
 
+    fn replaces_unconfirmed_bid(wallet: &SpacesWallet, bid_spaceout: &FullSpaceOut) -> bool {
+        let outpoint = bid_spaceout.outpoint();
+        wallet
+            .spaces
+            .transactions()
+            .filter(|tx| !tx.chain_position.is_confirmed())
+            .any(|tx| {
+                tx.tx_node
+                    .input
+                    .iter()
+                    .any(|input| input.previous_output == outpoint)
+            })
+    }
+
     fn batch_tx(
         network: ExtendedNetwork,
         source: &BitcoinBlockSource,
@@ -526,10 +552,12 @@ impl RpcWallet {
         let mut builder = wallet::builder::Builder::new();
         builder = builder.fee_rate(fee_rate);
 
-        if tx.auction_outputs.is_some() {
-            builder = builder.auction_outputs(tx.auction_outputs.unwrap());
+        if tx.bidouts.is_some() {
+            builder = builder.bidouts(tx.bidouts.unwrap());
         }
         builder = builder.force(tx.force);
+
+        let mut bid_replacement = false;
 
         for req in tx.requests {
             match req {
@@ -603,7 +631,13 @@ impl RpcWallet {
                     if spaceout.is_none() {
                         return Err(anyhow!("bid '{}': space does not exist", params.name));
                     }
-                    builder = builder.add_bid(spaceout.unwrap(), Amount::from_sat(params.amount));
+
+                    let spaceout = spaceout.unwrap();
+                    if Self::replaces_unconfirmed_bid(wallet, &spaceout) {
+                        bid_replacement = true;
+                    }
+
+                    builder = builder.add_bid(spaceout, Amount::from_sat(params.amount));
                 }
                 RpcWalletRequest::Register(params) => {
                     let name = SLabel::from_str(&params.name)?;
@@ -686,13 +720,11 @@ impl RpcWallet {
         }
 
         let median_time = source.get_median_time()?;
-        let coin_selection = Self::get_spaces_coin_selection(wallet, store)?;
+        let coin_selection = Self::get_spaces_coin_selection(wallet, store, bid_replacement)?;
 
         let mut tx_iter = builder.build_iter(tx.dust, median_time, wallet, coin_selection)?;
 
         let mut result_set = Vec::new();
-        let mut raw_set = Vec::new();
-        let mut has_errors = false;
         while let Some(tx_result) = tx_iter.next() {
             let tagged = tx_result?;
 
@@ -701,10 +733,10 @@ impl RpcWallet {
                 txid: tagged.tx.compute_txid(),
                 tags: tagged.tags,
                 error: None,
+                raw: None,
             });
 
             let raw = bitcoin::consensus::encode::serialize_hex(&tagged.tx);
-            raw_set.push(raw);
             let result = source.rpc.broadcast_tx(&source.client, &tagged.tx);
             match result {
                 Ok(confirmation) => {
@@ -712,15 +744,16 @@ impl RpcWallet {
                     tx_iter.wallet.commit()?;
                 }
                 Err(e) => {
-                    has_errors = true;
+                    result_set.last_mut().unwrap().raw = Some(raw);
+
                     let mut error_data = BTreeMap::new();
                     if let BitcoinRpcError::Rpc(rpc) = e {
                         if is_bid {
                             if rpc.message.contains("replacement-adds-unconfirmed") {
                                 error_data.insert(
                                     "hint".to_string(),
-                                    "If you have don't have confirmed auction outputs, you cannot \
-                                                  replace bids in the mempool."
+                                    "Competing bid in mempool but wallet has no confirmed bid \
+                                    outputs (required to replace mempool bids)"
                                         .to_string(),
                                 );
                             }
@@ -749,10 +782,7 @@ impl RpcWallet {
             }
         }
 
-        Ok(WalletResponse {
-            sent: result_set,
-            raw: if has_errors { Some(raw_set) } else { None },
-        })
+        Ok(WalletResponse { result: result_set })
     }
 
     pub async fn service(
@@ -876,10 +906,10 @@ impl RpcWallet {
         resp_rx.await?
     }
 
-    pub async fn send_list_auction_outputs(&self) -> anyhow::Result<Vec<DoubleUtxo>> {
+    pub async fn send_list_bidouts(&self) -> anyhow::Result<Vec<DoubleUtxo>> {
         let (resp, resp_rx) = oneshot::channel();
         self.sender
-            .send(WalletCommand::ListAuctionOutputs { resp })
+            .send(WalletCommand::ListBidouts { resp })
             .await?;
         resp_rx.await?
     }

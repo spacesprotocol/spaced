@@ -220,7 +220,10 @@ impl SpacesWallet {
     }
 
     /// List outputs that can be safely auctioned off
-    pub fn list_auction_outputs(&mut self) -> anyhow::Result<Vec<DoubleUtxo>> {
+    pub fn list_bidouts(
+        &mut self,
+        selection: &SpacesAwareCoinSelection,
+    ) -> anyhow::Result<Vec<DoubleUtxo>> {
         let mut unspent: Vec<LocalOutput> = self.spaces.list_unspent().collect();
         let mut not_auctioned = vec![];
 
@@ -263,6 +266,15 @@ impl SpacesWallet {
                 && is_connector_dust(utxo1.txout.value)
                 && !is_space_dust(utxo2.txout.value)
                 && utxo2.txout.is_magic_output()
+
+                // Exclude any outputs that we know to be spaces
+                && !selection.exclude_outputs.iter()
+                .any(|sel|
+                    sel.is_space &&
+                        (sel.outpoint == utxo1.outpoint || sel.outpoint == utxo2.outpoint)
+                )
+                // Check if confirmed only are required
+                && (!selection.confirmed_only || utxo1.confirmation_time.is_confirmed())
             {
                 not_auctioned.push(DoubleUtxo {
                     spend: FullTxOut {
@@ -281,12 +293,27 @@ impl SpacesWallet {
         Ok(not_auctioned)
     }
 
-    pub fn new_bid_psbt(&mut self, total_burned: Amount) -> anyhow::Result<(Psbt, DoubleUtxo)> {
-        let all = self.list_auction_outputs()?;
+    pub fn new_bid_psbt(
+        &mut self,
+        total_burned: Amount,
+        selection: &SpacesAwareCoinSelection,
+    ) -> anyhow::Result<(Psbt, DoubleUtxo)> {
+        let all: Vec<_> = self.list_bidouts(selection)?;
+
+        let msg = if selection.confirmed_only {
+            "The wallet already has an unconfirmed bid for this space in the mempool, but no \
+            confirmed bid utxos are available to replace it with a different amount."
+        } else {
+            "No bid outputs found"
+        };
 
         let placeholder = all
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("No placeholders found"))?
+            // always prefer confirmed ones since
+            // we don't monitor mempool for other competing bids
+            // this makes replacements smoother
+            .iter().find(|x| x.confirmed)
+            .or_else(|| all.first())
+            .ok_or_else(|| anyhow::anyhow!("{}", msg))?
             .clone();
 
         let refund_value = total_burned + placeholder.auction.txout.value;
