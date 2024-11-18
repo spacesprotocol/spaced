@@ -27,7 +27,7 @@ use wallet::{
         wallet::tx_builder::TxOrdering,
         KeychainKind, LocalOutput,
     },
-    bitcoin::{self,Address, Amount, FeeRate, OutPoint},
+    bitcoin::{self, Address, Amount, FeeRate, OutPoint},
     builder::{
         CoinTransfer, SelectionOutput, SpaceTransfer, SpacesAwareCoinSelection, TransactionTag,
         TransferRequest,
@@ -943,12 +943,6 @@ impl RpcWallet {
         resp_rx.await?
     }
 
-    pub async fn send_list_spaces(&self) -> anyhow::Result<Vec<WalletOutput>> {
-        let (resp, resp_rx) = oneshot::channel();
-        self.sender.send(WalletCommand::ListSpaces { resp }).await?;
-        resp_rx.await?
-    }
-
     pub async fn send_force_spend(
         &self,
         outpoint: OutPoint,
@@ -962,6 +956,12 @@ impl RpcWallet {
                 resp,
             })
             .await?;
+        resp_rx.await?
+    }
+
+    pub async fn send_list_spaces(&self) -> anyhow::Result<Vec<WalletOutput>> {
+        let (resp, resp_rx) = oneshot::channel();
+        self.sender.send(WalletCommand::ListSpaces { resp }).await?;
         resp_rx.await?
     }
 
