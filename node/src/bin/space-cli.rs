@@ -262,7 +262,7 @@ impl SpaceCli {
     async fn send_request(
         &self,
         req: Option<RpcWalletRequest>,
-        auction_outputs: Option<u8>,
+        bidouts: Option<u8>,
         fee_rate: Option<u64>,
     ) -> Result<(), ClientError> {
         let fee_rate = fee_rate.map(|fee| FeeRate::from_sat_per_vb(fee).unwrap());
@@ -271,7 +271,7 @@ impl SpaceCli {
             .wallet_send_request(
                 &self.wallet,
                 RpcWalletTxBuilder {
-                    auction_outputs,
+                    bidouts,
                     requests: match req {
                         None => vec![],
                         Some(req) => vec![req],
@@ -533,7 +533,7 @@ async fn handle_commands(
             println!("{}", serde_json::to_string_pretty(&spaces)?);
         }
         Commands::ListBidOuts => {
-            let spaces = cli.client.wallet_list_auction_outputs(&cli.wallet).await?;
+            let spaces = cli.client.wallet_list_bidouts(&cli.wallet).await?;
             println!("{}", serde_json::to_string_pretty(&spaces)?);
         }
         Commands::ListSpaces => {

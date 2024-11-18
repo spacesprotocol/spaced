@@ -7,15 +7,13 @@ use std::{
 };
 
 use anyhow::{anyhow, Context};
-use bdk_wallet::{
-    wallet::{
-        coin_selection::{
-            CoinSelectionAlgorithm, CoinSelectionResult, DefaultCoinSelectionAlgorithm, Error,
-        },
-        tx_builder::TxOrdering,
+use bdk_wallet::{wallet::{
+    coin_selection::{
+        CoinSelectionAlgorithm, CoinSelectionResult, DefaultCoinSelectionAlgorithm, Error,
     },
-    KeychainKind, TxBuilder, WeightedUtxo,
-};
+    tx_builder::TxOrdering,
+}, KeychainKind, TxBuilder, Utxo, WeightedUtxo};
+use bdk_wallet::wallet::error::CreateTxError;
 use bitcoin::{
     absolute::LockTime, psbt, psbt::Input, script, script::PushBytesBuf, Address, Amount, FeeRate,
     Network, OutPoint, Psbt, Script, ScriptBuf, Sequence, Transaction, TxOut, Txid, Witness,
@@ -41,7 +39,7 @@ pub struct Builder {
     /// Outputs that can be auctioned off during the bidding process
     /// If not specified it will create the minimum number of auction
     /// outputs needed to fulfill the given requests
-    auction_outputs: Option<u8>,
+    bidouts: Option<u8>,
 
     /// Whether to allow invalid transactions
     /// e.g. opens for name that already exist ... etc.
@@ -232,7 +230,7 @@ impl<'a, Cs: CoinSelectionAlgorithm> TxBuilderSpacesUtils<'a, Cs> for TxBuilder<
             placeholder.auction.outpoint.vout as u8,
             &offer,
         )?)
-        .expect("compressed psbt script bytes");
+            .expect("compressed psbt script bytes");
 
         let carrier = ScriptBuf::new_op_return(&compressed_psbt);
 
@@ -339,6 +337,7 @@ impl Builder {
         fee_rate: FeeRate,
         dust: Option<Amount>,
     ) -> anyhow::Result<(Transaction, Vec<FullTxOut>)> {
+        let coin_selection_confirmed_only = coin_selection.confirmed_only;
         let mut vout: u32 = 0;
         let mut tap_outputs = Vec::new();
         let change_address = w
@@ -420,7 +419,14 @@ impl Builder {
             }
 
             builder.enable_rbf().fee_rate(fee_rate);
-            let r = builder.finish()?;
+            let r = builder.finish().map_err(|e| match e {
+                CreateTxError::CoinSelection(e) if coin_selection_confirmed_only => {
+                    anyhow!("{} (replacements use confirmed balance only)", e)
+                }
+                _ => {
+                    anyhow!("{}", e)
+                }
+            })?;
             r
         };
 
@@ -447,7 +453,7 @@ pub struct TaggedTransaction {
 #[serde(rename_all = "kebab-case")]
 pub enum TransactionTag {
     FeeBump,
-    AuctionOutputs,
+    Bidouts,
     Commitment,
     Transfers,
     Open,
@@ -472,7 +478,7 @@ impl Iterator for BuilderIterator<'_> {
                     tags.push(TransactionTag::Transfers);
                 }
                 if params.auction_outputs.is_some() {
-                    tags.push(TransactionTag::AuctionOutputs);
+                    tags.push(TransactionTag::Bidouts);
                 }
                 if !params.opens.is_empty() || !params.executes.is_empty() {
                     tags.push(TransactionTag::Commitment);
@@ -622,7 +628,7 @@ impl Builder {
         Builder {
             requests: Vec::new(),
             fee_rate: None,
-            auction_outputs: None,
+            bidouts: None,
             force: false,
         }
     }
@@ -637,8 +643,8 @@ impl Builder {
         self
     }
 
-    pub fn auction_outputs(mut self, num: u8) -> Self {
-        self.auction_outputs = Some(num);
+    pub fn bidouts(mut self, num: u8) -> Self {
+        self.bidouts = Some(num);
         self
     }
 
@@ -709,13 +715,15 @@ impl Builder {
 
         let required_auction_outputs = open_count + bid_count as u8;
         let available = if required_auction_outputs > 0 {
-            wallet.list_auction_outputs()?
+            let mut selection = coin_selection.clone();
+            selection.confirmed_only = false;
+            wallet.list_bidouts(&selection)?
         } else {
             Vec::new()
         };
 
         // check how many bid outputs we need to create
-        let auction_outputs = match self.auction_outputs {
+        let auction_outputs = match self.bidouts {
             None => {
                 if required_auction_outputs > available.len() as u8 {
                     Some(required_auction_outputs - available.len() as u8)
@@ -799,7 +807,7 @@ impl Builder {
         fee_rate: FeeRate,
         force: bool,
     ) -> anyhow::Result<Transaction> {
-        let (offer, placeholder) = w.new_bid_psbt(bid)?;
+        let (offer, placeholder) = w.new_bid_psbt(bid, &coin_selection)?;
         let bid_psbt = {
             let mut builder = w.spaces
                 .build_tx()
@@ -831,7 +839,7 @@ impl Builder {
         fee_rate: FeeRate,
         force: bool,
     ) -> anyhow::Result<Transaction> {
-        let (offer, placeholder) = w.new_bid_psbt(params.amount)?;
+        let (offer, placeholder) = w.new_bid_psbt(params.amount, &coin_selection)?;
         let mut extra_prevouts = BTreeMap::new();
         let open_psbt = {
             let mut builder = w.spaces
@@ -911,6 +919,13 @@ impl Builder {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct SelectionOutput {
+    pub outpoint: OutPoint,
+    pub is_space: bool,
+    pub is_spaceout: bool,
+}
+
 /// A coin selection algorithm that :
 /// 1. Guarantees required utxos are ordered first appending
 /// any funding/change outputs to the end of the selected utxos.
@@ -920,17 +935,21 @@ impl Builder {
 pub struct SpacesAwareCoinSelection {
     pub default_algorithm: DefaultCoinSelectionAlgorithm,
     // Exclude outputs
-    pub exclude_outputs: Vec<OutPoint>,
+    pub exclude_outputs: Vec<SelectionOutput>,
+    // Whether to use confirmed only outputs
+    // to fund the transaction
+    pub confirmed_only: bool,
 }
 
 impl SpacesAwareCoinSelection {
     // Will skip any outputs with value less than the dust threshold
     // to avoid accidentally spending space outputs
     pub const DUST_THRESHOLD: Amount = Amount::from_sat(1200);
-    pub fn new(excluded: Vec<OutPoint>) -> Self {
+    pub fn new(excluded: Vec<SelectionOutput>, confirmed_only: bool) -> Self {
         Self {
             default_algorithm: DefaultCoinSelectionAlgorithm::default(),
             exclude_outputs: excluded,
+            confirmed_only,
         }
     }
 }
@@ -951,10 +970,20 @@ impl CoinSelectionAlgorithm for SpacesAwareCoinSelection {
 
         // Filter out UTXOs that are either explicitly excluded or below the dust threshold
         optional_utxos.retain(|weighted_utxo| {
+            if self.confirmed_only {
+                match &weighted_utxo.utxo {
+                    Utxo::Local(local) => {
+                        if !local.confirmation_time.is_confirmed() {
+                            return false;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
             weighted_utxo.utxo.txout().value > SpacesAwareCoinSelection::DUST_THRESHOLD
-                && !self
-                    .exclude_outputs
-                    .contains(&weighted_utxo.utxo.outpoint())
+                && !self.exclude_outputs
+                .iter().any(|o| o.outpoint == weighted_utxo.utxo.outpoint())
         });
 
         let mut result = self.default_algorithm.coin_select(

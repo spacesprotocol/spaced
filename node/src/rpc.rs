@@ -186,8 +186,8 @@ pub trait Rpc {
         wallet: &str,
     ) -> Result<Vec<WalletOutput>, ErrorObjectOwned>;
 
-    #[method(name = "walletlistauctionoutputs")]
-    async fn wallet_list_auction_outputs(
+    #[method(name = "walletlistbidouts")]
+    async fn wallet_list_bidouts(
         &self,
         wallet: &str,
     ) -> Result<Vec<DoubleUtxo>, ErrorObjectOwned>;
@@ -199,7 +199,7 @@ pub trait Rpc {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct RpcWalletTxBuilder {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub auction_outputs: Option<u8>,
+    pub bidouts: Option<u8>,
     pub requests: Vec<RpcWalletRequest>,
     pub fee_rate: Option<FeeRate>,
     pub dust: Option<Amount>,
@@ -764,13 +764,13 @@ impl RpcServer for RpcServerImpl {
             .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))
     }
 
-    async fn wallet_list_auction_outputs(
+    async fn wallet_list_bidouts(
         &self,
         wallet: &str,
     ) -> Result<Vec<DoubleUtxo>, ErrorObjectOwned> {
         self.wallet(&wallet)
             .await?
-            .send_list_auction_outputs()
+            .send_list_bidouts()
             .await
             .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))
     }
