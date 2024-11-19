@@ -210,6 +210,7 @@ pub struct RpcWalletTxBuilder {
     pub fee_rate: Option<FeeRate>,
     pub dust: Option<Amount>,
     pub force: bool,
+    pub confirmed_only: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
