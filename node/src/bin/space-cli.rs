@@ -28,7 +28,7 @@ use wallet::export::WalletExport;
 #[command(version, about, long_about = None)]
 pub struct Args {
     /// Bitcoin network to use
-    #[arg(long, env = "SPACED_CHAIN")]
+    #[arg(long, env = "SPACED_CHAIN", default_value = "mainnet")]
     chain: ExtendedNetwork,
     /// Spaced RPC URL [default: based on specified chain]
     #[arg(long)]
