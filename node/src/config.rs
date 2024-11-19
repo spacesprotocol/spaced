@@ -45,7 +45,7 @@ pub struct Args {
     #[arg(long, env = "SPACED_DATA_DIR")]
     data_dir: Option<PathBuf>,
     /// Network to use
-    #[arg(long, env = "SPACED_CHAIN")]
+    #[arg(long, env = "SPACED_CHAIN", default_value = "mainnet")]
     chain: ExtendedNetwork,
     /// Number of concurrent workers allowed during syncing
     #[arg(short, long, env = "SPACED_JOBS", default_value = "8")]

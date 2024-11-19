@@ -603,9 +603,9 @@ impl RpcWallet {
         if tx.bidouts.is_some() {
             builder = builder.bidouts(tx.bidouts.unwrap());
         }
-        builder = builder.force(tx.force);
 
-        let mut bid_replacement = false;
+        builder = builder.force(tx.force);
+        let mut bid_replacement = tx.confirmed_only;
 
         for req in tx.requests {
             match req {
@@ -800,8 +800,8 @@ impl RpcWallet {
                             if rpc.message.contains("replacement-adds-unconfirmed") {
                                 error_data.insert(
                                     "hint".to_string(),
-                                    "Competing bid in mempool but wallet has no confirmed bid \
-                                    outputs (required to replace mempool bids)"
+                                    "Competing bid in mempool but wallet must use confirmed bidouts and funding \
+                                    outputs to replace it. Try --confirmed-only"
                                         .to_string(),
                                 );
                             }

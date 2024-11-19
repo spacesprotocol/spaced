@@ -28,7 +28,7 @@ use wallet::export::WalletExport;
 #[command(version, about, long_about = None)]
 pub struct Args {
     /// Bitcoin network to use
-    #[arg(long, env = "SPACED_CHAIN")]
+    #[arg(long, env = "SPACED_CHAIN", default_value = "mainnet")]
     chain: ExtendedNetwork,
     /// Spaced RPC URL [default: based on specified chain]
     #[arg(long)]
@@ -92,6 +92,8 @@ enum Commands {
         /// Fee rate to use in sat/vB
         #[arg(long, short)]
         fee_rate: Option<u64>,
+        #[arg(long, short, default_value = "false")]
+        confirmed_only: bool,
     },
     /// Register a won auction
     Register {
@@ -270,6 +272,7 @@ impl SpaceCli {
         req: Option<RpcWalletRequest>,
         bidouts: Option<u8>,
         fee_rate: Option<u64>,
+        confirmed_only: bool,
     ) -> Result<(), ClientError> {
         let fee_rate = fee_rate.map(|fee| FeeRate::from_sat_per_vb(fee).unwrap());
         let result = self
@@ -285,6 +288,7 @@ impl SpaceCli {
                     fee_rate,
                     dust: self.dust,
                     force: self.force,
+                    confirmed_only
                 },
             )
             .await?;
@@ -440,6 +444,7 @@ async fn handle_commands(
                 })),
                 None,
                 fee_rate,
+                false
             )
             .await?
         }
@@ -447,6 +452,7 @@ async fn handle_commands(
             space,
             amount,
             fee_rate,
+            confirmed_only
         } => {
             cli.send_request(
                 Some(RpcWalletRequest::Bid(BidParams {
@@ -455,11 +461,12 @@ async fn handle_commands(
                 })),
                 None,
                 fee_rate,
+                confirmed_only
             )
             .await?
         }
         Commands::CreateBidOuts { pairs, fee_rate } => {
-            cli.send_request(None, Some(pairs), fee_rate).await?
+            cli.send_request(None, Some(pairs), fee_rate, false).await?
         }
         Commands::Register {
             space,
@@ -473,6 +480,7 @@ async fn handle_commands(
                 })),
                 None,
                 fee_rate,
+                false
             )
             .await?
         }
@@ -489,6 +497,7 @@ async fn handle_commands(
                 })),
                 None,
                 fee_rate,
+                false
             )
             .await?
         }
@@ -504,6 +513,7 @@ async fn handle_commands(
                 })),
                 None,
                 fee_rate,
+                false
             )
             .await?
         }
@@ -532,6 +542,7 @@ async fn handle_commands(
                 })),
                 None,
                 fee_rate,
+                false
             )
             .await?;
         }
