@@ -479,7 +479,7 @@ impl Validator {
     ) {
         let input = tx.input.get(input_index as usize).expect("input");
         let mut spaceout = stxo.previous_output;
-        let space_ref = spaceout.space.as_mut().unwrap();
+        let space_ref = spaceout.space.as_ref().unwrap();
         // Handle bid spends
         if space_ref.is_bid_spend(tx.version, input) {
             // Bid spends must have an auctioned output
@@ -526,7 +526,7 @@ impl Validator {
                 None
             };
 
-            space_ref.covenant = Covenant::Bid {
+            let new_covenant = Covenant::Bid {
                 signature: auctioned_output.bid_psbt.signature,
                 total_burned: total_burned + auctioned_output.bid_psbt.burn_amount,
                 burn_increment: auctioned_output.bid_psbt.burn_amount,
@@ -542,11 +542,16 @@ impl Validator {
                 txid: auctioned_output.bid_psbt.outpoint.txid,
                 spaceout: auctioned_spaceout,
             };
-            fullspaceout.spaceout.space = Some(spaceout.space.unwrap());
+            let mut updated_space = spaceout.space.clone().unwrap();
+            updated_space.covenant = new_covenant;
+            fullspaceout.spaceout.space = Some(updated_space);
 
             if !fullspaceout.verify_bid_sig() {
                 changeset.updates.push(UpdateOut {
-                    output: fullspaceout,
+                    output: FullSpaceOut {
+                        txid: input.previous_output.txid,
+                        spaceout,
+                    },
                     kind: UpdateKind::Revoke(RevokeReason::BidPsbt(BidPsbtReason::BadSignature)),
                 });
                 return;
