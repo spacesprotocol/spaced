@@ -288,7 +288,7 @@ impl SpaceCli {
                     fee_rate,
                     dust: self.dust,
                     force: self.force,
-                    confirmed_only
+                    confirmed_only,
                 },
             )
             .await?;
@@ -444,7 +444,7 @@ async fn handle_commands(
                 })),
                 None,
                 fee_rate,
-                false
+                false,
             )
             .await?
         }
@@ -452,7 +452,7 @@ async fn handle_commands(
             space,
             amount,
             fee_rate,
-            confirmed_only
+            confirmed_only,
         } => {
             cli.send_request(
                 Some(RpcWalletRequest::Bid(BidParams {
@@ -461,7 +461,7 @@ async fn handle_commands(
                 })),
                 None,
                 fee_rate,
-                confirmed_only
+                confirmed_only,
             )
             .await?
         }
@@ -480,7 +480,7 @@ async fn handle_commands(
                 })),
                 None,
                 fee_rate,
-                false
+                false,
             )
             .await?
         }
@@ -497,7 +497,7 @@ async fn handle_commands(
                 })),
                 None,
                 fee_rate,
-                false
+                false,
             )
             .await?
         }
@@ -513,7 +513,7 @@ async fn handle_commands(
                 })),
                 None,
                 fee_rate,
-                false
+                false,
             )
             .await?
         }
@@ -542,7 +542,7 @@ async fn handle_commands(
                 })),
                 None,
                 fee_rate,
-                false
+                false,
             )
             .await?;
         }
