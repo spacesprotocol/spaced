@@ -16,7 +16,7 @@ pub struct ChainAnchor {
     pub height: u32,
 }
 
-pub const RESERVED_SPACES: [&'static [u8]; 3] = [b"\x07example", b"\x04test", b"\x04local"];
+pub const RESERVED_SPACES: [&'static [u8]; 3] = [b"\x07example", b"\x04test", b"\x05local"];
 
 /// The number of blocks between each rollout of new spaces for auction.
 pub const ROLLOUT_BLOCK_INTERVAL: u32 = 144;
