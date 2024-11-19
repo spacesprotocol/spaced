@@ -1816,7 +1816,7 @@ dependencies = [
 
 [[package]]
 name = "protocol"
-version = "0.0.2"
+version = "0.0.4"
 dependencies = [
  "bincode 2.0.0-rc.3",
  "bitcoin",
@@ -2348,7 +2348,7 @@ dependencies = [
 
 [[package]]
 name = "spaced"
-version = "0.0.2"
+version = "0.0.4"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -2831,7 +2831,7 @@ dependencies = [
 
 [[package]]
 name = "wallet"
-version = "0.0.2"
+version = "0.0.4"
 dependencies = [
  "anyhow",
  "bdk_file_store",

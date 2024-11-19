@@ -311,7 +311,8 @@ impl SpacesWallet {
             // always prefer confirmed ones since
             // we don't monitor mempool for other competing bids
             // this makes replacements smoother
-            .iter().find(|x| x.confirmed)
+            .iter()
+            .find(|x| x.confirmed)
             .or_else(|| all.first())
             .ok_or_else(|| anyhow::anyhow!("{}", msg))?
             .clone();

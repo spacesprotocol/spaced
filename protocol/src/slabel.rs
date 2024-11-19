@@ -324,14 +324,8 @@ mod tests {
             SLabel::try_from("@xn---").is_err(),
             "Should not work with single hyphen punycode"
         );
-        assert!(
-            SLabel::try_from("@xn--1").is_ok(),
-            "Should be okay"
-        );
-        assert!(
-            SLabel::try_from("@0xn--1").is_err(),
-            "Should not be okay"
-        );
+        assert!(SLabel::try_from("@xn--1").is_ok(), "Should be okay");
+        assert!(SLabel::try_from("@0xn--1").is_err(), "Should not be okay");
         assert!(
             SLabel::try_from("@xn--123-pretty-valid-space-ok").is_ok(),
             "Should work :("
@@ -353,7 +347,9 @@ mod tests {
         );
 
         assert_eq!(
-            SLabel::try_from(b"\x14xn--hello-world-1234-five-six-seven").unwrap().as_ref(),
+            SLabel::try_from(b"\x14xn--hello-world-1234-five-six-seven")
+                .unwrap()
+                .as_ref(),
             b"\x14xn--hello-world-1234",
             "Should work"
         );

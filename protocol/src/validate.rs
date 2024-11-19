@@ -478,7 +478,7 @@ impl Validator {
         changeset: &mut TxChangeSet,
     ) {
         let input = tx.input.get(input_index as usize).expect("input");
-        let mut spaceout = stxo.previous_output;
+        let spaceout = stxo.previous_output;
         let space_ref = spaceout.space.as_ref().unwrap();
         // Handle bid spends
         if space_ref.is_bid_spend(tx.version, input) {
