@@ -14,7 +14,7 @@ Spaces are sovereign Bitcoin identities. They leverage the existing infrastructu
 
 ## Quick Start
 
-Check out the [documentation](httsp://docs.spacesprotocol.org) 
+Check out the [documentation](https://docs.spacesprotocol.org) 
 
 ## Development setup on testnet4
 
