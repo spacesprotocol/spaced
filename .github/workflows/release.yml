@@ -57,7 +57,6 @@ jobs:
           cp target/${{ matrix.target }}/release/spaced spaces-${{ env.TAG }}-${{ env.OS }}-${{ env.ARCH }}/spaced
           cp target/${{ matrix.target }}/release/space-cli spaces-${{ env.TAG }}-${{ env.OS }}-${{ env.ARCH }}/space-cli
           tar -czf spaces-${{ env.TAG }}-${{ env.OS }}-${{ env.ARCH }}.tar.gz spaces-${{ env.TAG }}-${{ env.OS }}-${{ env.ARCH }}
-          zip -r spaces-${{ env.TAG }}-${{ env.OS }}-${{ env.ARCH }}.zip spaces-${{ env.TAG }}-${{ env.OS }}-${{ env.ARCH }}
 
       - name: Create GitHub Release
         id: create_release
@@ -71,7 +70,6 @@ jobs:
           prerelease: false
           files: | 
             spaces-${{ env.TAG }}-${{ env.OS }}-${{ env.ARCH }}.tar.gz
-            spaces-${{ env.TAG }}-${{ env.OS }}-${{ env.ARCH }}.zip
           make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
