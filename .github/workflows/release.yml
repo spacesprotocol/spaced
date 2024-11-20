@@ -53,9 +53,11 @@ jobs:
 
       - name: Create release archive
         run: |
-          mkdir -p release
-          cp target/${{ matrix.target }}/release/spaced release/spaced-${{ env.TAG }}-${{ env.OS }}-${{ env.ARCH }}
-          cp target/${{ matrix.target }}/release/space-cli release/space-cli-${{ env.TAG }}-${{ env.OS }}-${{ env.ARCH }}
+          mkdir -p spaces-${{ env.TAG }}-${{ env.OS }}-${{ env.ARCH }}
+          cp target/${{ matrix.target }}/release/spaced spaces-${{ env.TAG }}-${{ env.OS }}-${{ env.ARCH }}/spaced
+          cp target/${{ matrix.target }}/release/space-cli spaces-${{ env.TAG }}-${{ env.OS }}-${{ env.ARCH }}/space-cli
+          tar -czf spaces-${{ env.TAG }}-${{ env.OS }}-${{ env.ARCH }}.tar.gz spaces-${{ env.TAG }}-${{ env.OS }}-${{ env.ARCH }}
+          zip -r spaces-${{ env.TAG }}-${{ env.OS }}-${{ env.ARCH }}.zip spaces-${{ env.TAG }}-${{ env.OS }}-${{ env.ARCH }}
 
       - name: Create GitHub Release
         id: create_release
@@ -68,8 +70,8 @@ jobs:
           draft: false
           prerelease: false
           files: | 
-            release/spaced-${{ env.TAG }}-${{ env.OS }}-${{ env.ARCH }}
-            release/space-cli-${{ env.TAG }}-${{ env.OS }}-${{ env.ARCH }}
+            spaces-${{ env.TAG }}-${{ env.OS }}-${{ env.ARCH }}.tar.gz
+            spaces-${{ env.TAG }}-${{ env.OS }}-${{ env.ARCH }}.zip
           make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
