@@ -1,4 +1,4 @@
-# Bitcoin Spaces
+# Spaces on Bitcoin
 
 Checkout [releases](https://github.com/spacesprotocol/spaces/releases) for an immediately usable binary version of this software.
 
