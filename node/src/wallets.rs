@@ -177,9 +177,9 @@ impl RpcWallet {
             dust: unspent
                 .into_iter()
                 .filter(|output|
-                    (output.is_spaceout || output.output.txout.value <= SpacesAwareCoinSelection::DUST_THRESHOLD) &&
-                        // trusted pending only
-                        (output.output.confirmation_time.is_confirmed() || output.output.keychain == KeychainKind::Internal)
+                    // confirmed or trusted pending only
+                    (output.output.confirmation_time.is_confirmed() || output.output.keychain == KeychainKind::Internal) &&
+                        (output.space.is_some() || output.output.txout.value <= SpacesAwareCoinSelection::DUST_THRESHOLD)
                 )
                 .map(|output| output.output.txout.value)
                 .sum(),
@@ -449,17 +449,22 @@ impl RpcWallet {
         state: &mut LiveSnapshot,
         confirmed_only: bool,
     ) -> anyhow::Result<SpacesAwareCoinSelection> {
-        // Filters out all "space outs" from the selection.
-        // Note: This exclusion only applies to confirmed space outs; unconfirmed ones are not excluded.
+        // Filters out all "spaceouts" with value higher than DUST threshold && all spaceouts representing
+        // spaces.
+        //
+        // Note: This exclusion only applies to confirmed spaceouts; unconfirmed ones are not excluded
+        // as we cannot easily detect them for now.
         // In practice, this should be fine since Spaces coin selection skips dust by default,
-        // so explicitly excluding space outs may be redundant.
+        // so explicitly excluding spaceouts may be redundant.
         let excluded = Self::list_unspent(wallet, state)?
             .into_iter()
-            .filter(|out| out.is_spaceout)
+            .filter(|out| out.space.is_some() ||
+                (out.is_spaceout && out.output.txout.value <= SpacesAwareCoinSelection::DUST_THRESHOLD)
+            )
             .map(|out| SelectionOutput {
                 outpoint: out.output.outpoint,
                 is_space: out.space.is_some(),
-                is_spaceout: true,
+                is_spaceout: out.is_spaceout,
             })
             .collect::<Vec<_>>();
 
@@ -641,14 +646,14 @@ impl RpcWallet {
                         match store.get_space_info(&spacehash)? {
                             None => return Err(anyhow!("sendspaces: you don't own `{}`", space)),
                             Some(full)
-                                if full.spaceout.space.is_none()
-                                    || !full.spaceout.space.as_ref().unwrap().is_owned()
-                                    || !wallet
-                                        .spaces
-                                        .is_mine(full.spaceout.script_pubkey.as_script()) =>
-                            {
-                                return Err(anyhow!("sendspaces: you don't own `{}`", space));
-                            }
+                            if full.spaceout.space.is_none()
+                                || !full.spaceout.space.as_ref().unwrap().is_owned()
+                                || !wallet
+                                .spaces
+                                .is_mine(full.spaceout.script_pubkey.as_script()) =>
+                                {
+                                    return Err(anyhow!("sendspaces: you don't own `{}`", space));
+                                }
                             Some(full) => {
                                 builder =
                                     builder.add_transfer(TransferRequest::Space(SpaceTransfer {
