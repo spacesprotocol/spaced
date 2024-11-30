@@ -610,7 +610,7 @@ impl Validator {
                 if changeset
                     .creates
                     .iter()
-                    .position(|x| x.n == input_index)
+                    .position(|x| x.n == output_index)
                     .is_some()
                 {
                     changeset.updates.push(UpdateOut {
