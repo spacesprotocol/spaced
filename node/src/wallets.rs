@@ -202,6 +202,11 @@ impl RpcWallet {
             wallet, state,
             false, /* generally bdk won't use unconfirmed for replacements anyways */
         )?;
+        let previous_tx_lock_time = match wallet.spaces.get_tx(txid) {
+            None => return Err(anyhow::anyhow!("No wallet tx {} found", txid)),
+            Some(tx) => tx.tx_node.lock_time
+        };
+
         let mut builder = wallet
             .spaces
             .build_fee_bump(txid)?
@@ -210,6 +215,7 @@ impl RpcWallet {
         builder
             .enable_rbf()
             .ordering(TxOrdering::Untouched)
+            .nlocktime(previous_tx_lock_time)
             .fee_rate(fee_rate);
 
         let psbt = builder.finish()?;
