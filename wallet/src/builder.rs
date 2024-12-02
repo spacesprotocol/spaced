@@ -808,6 +808,8 @@ impl Builder {
         fee_rate: FeeRate,
         force: bool,
     ) -> anyhow::Result<Transaction> {
+        w.watch_bid_spend(prev.outpoint());
+
         let (offer, placeholder) = w.new_bid_psbt(bid, &coin_selection)?;
         let bid_psbt = {
             let mut builder = w.spaces.build_tx().coin_selection(coin_selection);

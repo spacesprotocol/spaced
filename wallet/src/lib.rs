@@ -5,7 +5,7 @@ use std::{
     path::PathBuf,
     time::{Duration, SystemTime},
 };
-
+use std::collections::HashSet;
 use anyhow::{anyhow, Context};
 use bdk_wallet::{
     chain::{BlockId, ConfirmationTime},
@@ -57,6 +57,7 @@ pub struct SpacesWallet {
     pub config: WalletConfig,
     pub spaces: bdk_wallet::wallet::Wallet,
     pub spaces_db: bdk_file_store::Store<ChangeSet>,
+    pub watch_bid_spends: HashSet<OutPoint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -144,10 +145,15 @@ impl SpacesWallet {
             config,
             spaces: spaces_wallet,
             spaces_db,
+            watch_bid_spends: HashSet::new(),
         };
 
         wallet.clear_unused_signing_info();
         Ok(wallet)
+    }
+
+    pub fn watch_bid_spend(&mut self, outpoint: OutPoint) {
+        self.watch_bid_spends.insert(outpoint);
     }
 
     pub fn rebuild(self) -> anyhow::Result<Self> {
@@ -502,7 +508,7 @@ impl SpacesWallet {
                     signature,
                     sighash_type,
                 }
-                .to_vec(),
+                    .to_vec(),
             );
             witness.push(&signing_info.script);
             witness.push(&signing_info.control_block.serialize());

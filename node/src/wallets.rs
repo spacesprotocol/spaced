@@ -35,7 +35,7 @@ use wallet::{
     },
     DoubleUtxo, SpacesWallet, WalletInfo,
 };
-
+use wallet::bdk_wallet::chain::ConfirmationTime;
 use crate::{
     config::ExtendedNetwork,
     node::BlockSource,
@@ -385,6 +385,22 @@ impl RpcWallet {
                                 hash: wallet_tip.hash,
                             },
                         )?;
+
+                        // Temporary fix for https://github.com/bitcoindevkit/bdk/issues/1740
+                        for tx in block.txdata {
+                            for input in tx.input.iter() {
+                                if wallet.watch_bid_spends.contains(&input.previous_output) {
+                                    if wallet.spaces.get_tx(tx.compute_txid()).is_some() {
+                                        break;
+                                    }
+                                    wallet.insert_tx(tx, ConfirmationTime::Confirmed {
+                                        height: id.height,
+                                        time: block.header.time as _,
+                                    })?;
+                                    break;
+                                }
+                            }
+                        }
 
                         wallet_tip.height = id.height;
                         wallet_tip.hash = id.hash;
