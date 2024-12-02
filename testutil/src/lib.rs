@@ -317,6 +317,16 @@ impl TestRig {
         )
     }
 
+    pub async fn get_raw_transaction(&self, txid: &Txid) -> Result<Transaction> {
+        let c = self.bitcoind.clone();
+        let txid = txid.clone();
+        Ok(
+            tokio::task::spawn_blocking(move || c.client.get_raw_transaction(&txid, None))
+                .await
+                .expect("handle")?,
+        )
+    }
+
     /// Reorg a number of blocks of a given size `count`.
     /// Refer to [`SpaceD::mine_empty_block`] for more information.
     ///
