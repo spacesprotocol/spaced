@@ -1,5 +1,5 @@
 use std::{net::Ipv4Addr, process::Child, time::Duration};
-
+use std::process::Stdio;
 use anyhow::Result;
 use assert_cmd::cargo::CommandCargoExt;
 use bitcoind::{anyhow, anyhow::anyhow, get_available_port, tempfile::tempdir};
@@ -21,6 +21,7 @@ pub struct Conf<'a> {
     /// Spaced command line arguments e.g. `vec!["--chain", "regtest"]`
     /// note that `--rpc-port`, `--data-dir` are automatically initialized.
     pub args: Vec<&'a str>,
+    pub view_stdout: bool,
 }
 
 #[derive(Debug)]
@@ -34,6 +35,12 @@ impl SpaceD {
     pub async fn new(conf: Conf<'_>) -> Result<Self> {
         let rpc_port = get_available_port()?;
 
+        let stdout = if conf.view_stdout {
+            Stdio::inherit()
+        } else {
+            Stdio::null()
+        };
+
         let args: Vec<_> = conf.args.into_iter().map(String::from).collect();
         let process = tokio::task::spawn_blocking(move || -> Result<Child> {
             Ok(std::process::Command::cargo_bin("spaced")?
@@ -42,6 +49,7 @@ impl SpaceD {
                 .arg(rpc_port.to_string())
                 .arg("--data-dir")
                 .arg(tempdir()?.path())
+                .stdout(stdout)
                 .spawn()?)
         })
         .await

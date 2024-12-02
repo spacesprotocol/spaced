@@ -1,8 +1,8 @@
 pub extern crate bitcoind;
 pub mod spaced;
 
-use std::{sync::Arc, time::Duration};
-
+use std::{fs, io, sync::Arc, time::Duration};
+use std::path::{Path, PathBuf};
 use ::spaced::{
     jsonrpsee::tokio,
     node::protocol::{
@@ -26,17 +26,51 @@ use bitcoind::{
     },
     BitcoinD,
 };
-
+use bitcoind::anyhow::Context;
+use bitcoind::tempfile::{tempdir, TempDir};
 use crate::spaced::SpaceD;
+
+// Path to the pre-created regtest testdata in build.rs
+pub fn bitcoin_regtest_data_path() -> Result<String> {
+    let mut path: PathBuf = env!("OUT_DIR").into();
+    path.push("regtest_unpacked");
+    path.push("bitcoin_core_regtest_data");
+    Ok(format!("{}", path.display()))
+}
 
 #[derive(Debug)]
 pub struct TestRig {
     pub bitcoind: Arc<BitcoinD>,
     pub spaced: SpaceD,
+    pub test_data: Option<TempDir>,
 }
 
 impl TestRig {
-    pub async fn new() -> Result<Self> {
+    pub async fn new_with_regtest_preset() -> Result<TestRig> {
+        let original_test_data = bitcoin_regtest_data_path()
+            .context("could not get unpacked regtest testdata")?;
+        let test_data = tempdir()?;
+        copy_dir_all(original_test_data, test_data.path())?;
+
+        let mut conf = bitcoind::Conf::default();
+        conf.args = vec![
+            "-regtest",
+            "-rpcworkqueue=100",
+            "-fallbackfee=0.0001",
+            "-rpcauth=user:70dbb4f60ccc95e154da97a43b7a9d06$00c10a3849edf2f10173e80d0bdadbde793ad9a80e6e6f9f71f978fb5c797343"
+        ];
+
+        conf.staticdir = Some(test_data.path().join("bitcoind"));
+
+        TestRig::new_with_bitcoin_conf(conf, Some(test_data)).await
+    }
+
+    pub async fn testdata_wallets_path(&self) -> PathBuf {
+        self.test_data.as_ref().expect("created with regtest preset")
+            .path().join("wallets")
+    }
+
+    pub async fn new() -> Result<TestRig> {
         let mut conf = bitcoind::Conf::default();
         // The RPC auth uses username "user" and password "password". If we
         // don't set this, bitcoind's RPC API becomes inaccessible to spaced due
@@ -47,6 +81,11 @@ impl TestRig {
             "-rpcauth=user:70dbb4f60ccc95e154da97a43b7a9d06$00c10a3849edf2f10173e80d0bdadbde793ad9a80e6e6f9f71f978fb5c797343"
         ];
 
+        Self::new_with_bitcoin_conf(conf, None).await
+    }
+
+    pub async fn new_with_bitcoin_conf(conf: bitcoind::Conf<'static>, test_data: Option<TempDir>) -> Result<Self> {
+        let view_stdout = conf.view_stdout;
         let bitcoind =
             tokio::task::spawn_blocking(move || BitcoinD::from_downloaded_with_conf(&conf))
                 .await
@@ -63,14 +102,16 @@ impl TestRig {
                 "user",
                 "--bitcoin-rpc-password",
                 "password",
-                "--block-index",
+                "--block-index-full",
             ],
+            view_stdout,
         };
 
         let spaced = SpaceD::new(spaced_conf).await?;
         Ok(TestRig {
             bitcoind: Arc::new(bitcoind),
             spaced,
+            test_data,
         })
     }
 
@@ -163,8 +204,8 @@ impl TestRig {
                 &[],
             )
         })
-        .await
-        .expect("handle")?;
+            .await
+            .expect("handle")?;
 
         let txdata = vec![Transaction {
             version: transaction::Version::ONE,
@@ -325,8 +366,22 @@ impl TestRig {
             c.client
                 .send_to_address(&addr, amount, None, None, None, None, None, None)
         })
-        .await
-        .expect("handle")?;
+            .await
+            .expect("handle")?;
         Ok(txid)
     }
+}
+
+pub fn copy_dir_all(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> io::Result<()> {
+    fs::create_dir_all(&dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        if ty.is_dir() {
+            copy_dir_all(entry.path(), dst.as_ref().join(entry.file_name()))?;
+        } else {
+            fs::copy(entry.path(), dst.as_ref().join(entry.file_name()))?;
+        }
+    }
+    Ok(())
 }
