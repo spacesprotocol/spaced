@@ -5,7 +5,7 @@ use std::{
     path::PathBuf,
     time::{Duration, SystemTime},
 };
-
+use std::collections::HashSet;
 use anyhow::{anyhow, Context};
 use bdk_wallet::{
     chain::{BlockId, ConfirmationTime},
@@ -38,7 +38,7 @@ use protocol::{
     prepare::TrackableOutput,
 };
 use serde::{ser::SerializeSeq, Deserialize, Deserializer, Serialize, Serializer};
-
+use protocol::prepare::is_magic_lock_time;
 use crate::{
     address::SpaceAddress,
     builder::{is_connector_dust, is_space_dust, SpacesAwareCoinSelection},
@@ -57,6 +57,7 @@ pub struct SpacesWallet {
     pub config: WalletConfig,
     pub spaces: bdk_wallet::wallet::Wallet,
     pub spaces_db: bdk_file_store::Store<ChangeSet>,
+    pub watch_bid_spends: HashSet<OutPoint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -144,10 +145,15 @@ impl SpacesWallet {
             config,
             spaces: spaces_wallet,
             spaces_db,
+            watch_bid_spends: HashSet::new(),
         };
 
         wallet.clear_unused_signing_info();
         Ok(wallet)
+    }
+
+    pub fn watch_bid_spend(&mut self, outpoint: OutPoint) {
+        self.watch_bid_spends.insert(outpoint);
     }
 
     pub fn rebuild(self) -> anyhow::Result<Self> {
@@ -276,6 +282,17 @@ impl SpacesWallet {
                 // Check if confirmed only are required
                 && (!selection.confirmed_only || utxo1.confirmation_time.is_confirmed())
             {
+                // While it's possible to create outputs within space transactions
+                // that don't use a special locktime, for now it's safer to require
+                // explicitly trackable outputs.
+                let locktime = match self.spaces.get_tx(utxo2.outpoint.txid) {
+                    None => continue,
+                    Some(tx) => tx.tx_node.lock_time
+                };
+                if !is_magic_lock_time(&locktime) {
+                    continue;
+                }
+
                 not_auctioned.push(DoubleUtxo {
                     spend: FullTxOut {
                         outpoint: utxo1.outpoint,
@@ -502,7 +519,7 @@ impl SpacesWallet {
                     signature,
                     sighash_type,
                 }
-                .to_vec(),
+                    .to_vec(),
             );
             witness.push(&signing_info.script);
             witness.push(&signing_info.control_block.serialize());

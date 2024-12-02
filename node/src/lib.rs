@@ -11,3 +11,4 @@ pub mod source;
 pub mod store;
 pub mod sync;
 pub mod wallets;
+mod checker;

@@ -7,3 +7,7 @@ edition = "2021"
 bitcoind = { version = "0.36.0", features = ["26_0"] }
 spaced = { path = "../node" }
 assert_cmd = "2.0.16"
+
+[build-dependencies]
+zip = { version = "0.6" }
+anyhow = "1.0.66"
