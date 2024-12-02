@@ -38,7 +38,7 @@ use protocol::{
     prepare::TrackableOutput,
 };
 use serde::{ser::SerializeSeq, Deserialize, Deserializer, Serialize, Serializer};
-
+use protocol::prepare::is_magic_lock_time;
 use crate::{
     address::SpaceAddress,
     builder::{is_connector_dust, is_space_dust, SpacesAwareCoinSelection},
@@ -282,6 +282,17 @@ impl SpacesWallet {
                 // Check if confirmed only are required
                 && (!selection.confirmed_only || utxo1.confirmation_time.is_confirmed())
             {
+                // While it's possible to create outputs within space transactions
+                // that don't use a special locktime, for now it's safer to require
+                // explicitly trackable outputs.
+                let locktime = match self.spaces.get_tx(utxo2.outpoint.txid) {
+                    None => continue,
+                    Some(tx) => tx.tx_node.lock_time
+                };
+                if !is_magic_lock_time(&locktime) {
+                    continue;
+                }
+
                 not_auctioned.push(DoubleUtxo {
                     spend: FullTxOut {
                         outpoint: utxo1.outpoint,
