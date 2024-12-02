@@ -15,24 +15,18 @@ use bdk::{
 };
 use jsonrpsee::{core::async_trait, proc_macros::rpc, server::Server, types::ErrorObjectOwned};
 use log::info;
-use protocol::{
-    bitcoin::{
-        bip32::Xpriv,
-        Network::{Regtest, Testnet},
-        OutPoint,
-    },
-    constants::ChainAnchor,
-    hasher::{BaseHash, KeyHasher, SpaceKey},
-    prepare::DataSource,
-    slabel::SLabel,
-    FullSpaceOut, SpaceOut,
-};
+use protocol::{bitcoin, bitcoin::{
+    bip32::Xpriv,
+    Network::{Regtest, Testnet},
+    OutPoint,
+}, constants::ChainAnchor, hasher::{BaseHash, KeyHasher, SpaceKey}, prepare::DataSource, slabel::SLabel, FullSpaceOut, SpaceOut};
 use serde::{Deserialize, Serialize};
 use tokio::{
     select,
     sync::{broadcast, mpsc, oneshot, RwLock},
     task::JoinSet,
 };
+use protocol::validate::TxChangeSet;
 use wallet::{
     bdk_wallet as bdk, bdk_wallet::template::Bip86, bitcoin::hashes::Hash, export::WalletExport,
     DoubleUtxo, SpacesWallet, WalletConfig, WalletDescriptors, WalletInfo,
@@ -48,6 +42,7 @@ use crate::{
         WalletResponse,
     },
 };
+use crate::checker::TxChecker;
 
 pub(crate) type Responder<T> = oneshot::Sender<T>;
 
@@ -58,6 +53,10 @@ pub struct ServerInfo {
 }
 
 pub enum ChainStateCommand {
+    CheckPackage {
+        txs: Vec<String>,
+        resp: Responder<anyhow::Result<Vec<Option<TxChangeSet>>>>,
+    },
     GetTip {
         resp: Responder<anyhow::Result<ChainAnchor>>,
     },
@@ -117,6 +116,9 @@ pub trait Rpc {
     #[method(name = "getspaceout")]
     async fn get_spaceout(&self, outpoint: OutPoint) -> Result<Option<SpaceOut>, ErrorObjectOwned>;
 
+    #[method(name = "checkpackage")]
+    async fn check_package(&self, txs: Vec<String>) -> Result<Vec<Option<TxChangeSet>>, ErrorObjectOwned>;
+
     #[method(name = "estimatebid")]
     async fn estimate_bid(&self, target: usize) -> Result<u64, ErrorObjectOwned>;
 
@@ -167,6 +169,7 @@ pub trait Rpc {
         wallet: &str,
         txid: Txid,
         fee_rate: FeeRate,
+        skip_tx_check: bool,
     ) -> Result<Vec<TxResponse>, ErrorObjectOwned>;
 
     #[method(name = "walletlisttransactions")]
@@ -187,7 +190,7 @@ pub trait Rpc {
 
     #[method(name = "walletlistspaces")]
     async fn wallet_list_spaces(&self, wallet: &str)
-        -> Result<Vec<WalletOutput>, ErrorObjectOwned>;
+                                -> Result<Vec<WalletOutput>, ErrorObjectOwned>;
 
     #[method(name = "walletlistunspent")]
     async fn wallet_list_unspent(
@@ -211,6 +214,7 @@ pub struct RpcWalletTxBuilder {
     pub dust: Option<Amount>,
     pub force: bool,
     pub confirmed_only: bool,
+    pub skip_tx_check: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -617,6 +621,15 @@ impl RpcServer for RpcServerImpl {
         Ok(spaceout)
     }
 
+    async fn check_package(&self, txs: Vec<String>) -> Result<Vec<Option<TxChangeSet>>, ErrorObjectOwned> {
+        let spaceout = self
+            .store
+            .check_package(txs)
+            .await
+            .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))?;
+        Ok(spaceout)
+    }
+
     async fn estimate_bid(&self, target: usize) -> Result<u64, ErrorObjectOwned> {
         let info = self
             .store
@@ -731,10 +744,11 @@ impl RpcServer for RpcServerImpl {
         wallet: &str,
         txid: Txid,
         fee_rate: FeeRate,
+        skip_tx_check: bool
     ) -> Result<Vec<TxResponse>, ErrorObjectOwned> {
         self.wallet(&wallet)
             .await?
-            .send_fee_bump(txid, fee_rate)
+            .send_fee_bump(txid, fee_rate, skip_tx_check)
             .await
             .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))
     }
@@ -836,6 +850,7 @@ impl AsyncChainState {
         Ok(None)
     }
 
+
     async fn get_indexed_block(
         index: &mut Option<LiveSnapshot>,
         block_hash: &BlockHash,
@@ -884,6 +899,22 @@ impl AsyncChainState {
         cmd: ChainStateCommand,
     ) {
         match cmd {
+            ChainStateCommand::CheckPackage { txs : raw_txs, resp } => {
+                let mut txs = Vec::with_capacity(raw_txs.len());
+                for raw_tx in raw_txs {
+                    let tx = bitcoin::consensus::encode::deserialize_hex(&raw_tx);
+                    if tx.is_err() {
+                        let _ = resp.send(Err(anyhow!("could not decode hex transaction")));
+                        return;
+                    }
+                    txs.push(tx.unwrap());
+                }
+
+                let tip = chain_state.tip.read().expect("read meta").clone();
+                let mut emulator = TxChecker::new(chain_state);
+                let result = emulator.apply_package(tip.height+1, txs);
+                let _ = resp.send(result);
+            },
             ChainStateCommand::GetTip { resp } => {
                 let tip = chain_state.tip.read().expect("read meta").clone();
                 _ = resp.send(Ok(tip))
@@ -975,6 +1006,14 @@ impl AsyncChainState {
         let (resp, resp_rx) = oneshot::channel();
         self.sender
             .send(ChainStateCommand::GetSpaceOutpoint { hash, resp })
+            .await?;
+        resp_rx.await?
+    }
+
+    pub async fn check_package(&self, txs: Vec<String>) -> anyhow::Result<Vec<Option<TxChangeSet>>> {
+        let (resp, resp_rx) = oneshot::channel();
+        self.sender
+            .send(ChainStateCommand::CheckPackage { txs, resp })
             .await?;
         resp_rx.await?
     }

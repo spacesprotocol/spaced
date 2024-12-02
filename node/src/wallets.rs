@@ -45,6 +45,7 @@ use crate::{
     },
     store::{ChainState, LiveSnapshot, Sha256},
 };
+use crate::checker::TxChecker;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TxResponse {
@@ -93,6 +94,7 @@ pub enum WalletCommand {
     BumpFee {
         txid: Txid,
         fee_rate: FeeRate,
+        skip_tx_check: bool,
         resp: crate::rpc::Responder<anyhow::Result<Vec<TxResponse>>>,
     },
     ListTransactions {
@@ -196,6 +198,7 @@ impl RpcWallet {
         state: &mut LiveSnapshot,
         wallet: &mut SpacesWallet,
         txid: Txid,
+        skip_tx_check: bool,
         fee_rate: FeeRate,
     ) -> anyhow::Result<Vec<TxResponse>> {
         let coin_selection = Self::get_spaces_coin_selection(
@@ -220,6 +223,12 @@ impl RpcWallet {
 
         let psbt = builder.finish()?;
         let tx = wallet.sign(psbt, None)?;
+
+        if !skip_tx_check {
+            let tip = wallet.spaces.local_chain().tip().height();
+            let mut checker = TxChecker::new(state);
+            checker.check_apply_tx(tip+1, &tx)?;
+        }
 
         let new_txid = tx.compute_txid();
         let confirmation = source.rpc.broadcast_tx(&source.client, &tx)?;
@@ -283,9 +292,10 @@ impl RpcWallet {
             WalletCommand::BumpFee {
                 txid,
                 fee_rate,
+                skip_tx_check,
                 resp,
             } => {
-                let result = Self::handle_fee_bump(source, &mut state, wallet, txid, fee_rate);
+                let result = Self::handle_fee_bump(source, &mut state, wallet, txid, skip_tx_check, fee_rate);
                 _ = resp.send(result);
             }
             WalletCommand::ForceSpendOutput {
@@ -604,6 +614,9 @@ impl RpcWallet {
         store: &mut LiveSnapshot,
         tx: RpcWalletTxBuilder,
     ) -> anyhow::Result<WalletResponse> {
+        let tip_height = wallet.spaces.local_chain().tip().height();
+
+
         if let Some(dust) = tx.dust {
             if dust > SpacesAwareCoinSelection::DUST_THRESHOLD {
                 // Allowing higher dust may space outs to be accidentally
@@ -735,7 +748,7 @@ impl RpcWallet {
 
                         if claim_height.is_none() {
                             return Err(anyhow!(
-                                "register '{}': cannot register a space in pre-auctions",
+                                "register '{}': space may be in pre-auctions or already registered",
                                 params.name
                             ));
                         }
@@ -796,10 +809,25 @@ impl RpcWallet {
 
         let median_time = source.get_median_time()?;
         let coin_selection = Self::get_spaces_coin_selection(wallet, store, bid_replacement)?;
+        let mut checker = TxChecker::new(store);
+
+        if !tx.skip_tx_check {
+            let mut unconfirmed: Vec<_> = wallet
+                .spaces
+                .transactions()
+                .filter(|x|
+                    !x.chain_position.is_confirmed()).collect();
+            unconfirmed.sort();
+            // no tx checks for unconfirmed as they're already broadcasted,
+            // but we need to build on their state still
+            for un in unconfirmed {
+                checker.apply_tx(tip_height + 1, &un.tx_node.tx)?;
+            }
+        }
 
         let mut tx_iter = builder.build_iter(tx.dust, median_time, wallet, coin_selection)?;
-
         let mut result_set = Vec::new();
+
         while let Some(tx_result) = tx_iter.next() {
             let tagged = tx_result?;
 
@@ -810,6 +838,10 @@ impl RpcWallet {
                 error: None,
                 raw: None,
             });
+
+            if !tx.skip_tx_check {
+                checker.check_apply_tx(tip_height + 1, &tagged.tx)?;
+            }
 
             let raw = bitcoin::consensus::encode::serialize_hex(&tagged.tx);
             let result = source.rpc.broadcast_tx(&source.client, &tagged.tx);
@@ -827,7 +859,7 @@ impl RpcWallet {
                             if rpc.message.contains("replacement-adds-unconfirmed") {
                                 error_data.insert(
                                     "hint".to_string(),
-                                    "Competing bid in mempool but wallet must use confirmed bidouts and funding \
+                                    "a competing bid in mempool but wallet must use confirmed bidouts and funding \
                                     outputs to replace it. Try --confirmed-only"
                                         .to_string(),
                                 );
@@ -837,7 +869,7 @@ impl RpcWallet {
                                 error_data.insert(
                                     "hint".to_string(),
                                     format!(
-                                        "A competing bid in the mempool; replace \
+                                        "a competing bid in the mempool; replace \
                                                   with a feerate > {} sat/vB.",
                                         fee_rate.to_sat_per_vb_ceil()
                                     ),
@@ -947,12 +979,14 @@ impl RpcWallet {
         &self,
         txid: Txid,
         fee_rate: FeeRate,
+        skip_tx_check: bool,
     ) -> anyhow::Result<Vec<TxResponse>> {
         let (resp, resp_rx) = oneshot::channel();
         self.sender
             .send(WalletCommand::BumpFee {
                 txid,
                 fee_rate,
+                skip_tx_check,
                 resp,
             })
             .await?;

@@ -42,6 +42,9 @@ pub struct Args {
     /// Force invalid transaction (for testing only)
     #[arg(long, global = true, default_value = "false")]
     force: bool,
+    /// Skip tx checker (not recommended)
+    #[arg(long, global = true, default_value = "false")]
+    skip_tx_check: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -241,6 +244,7 @@ struct SpaceCli {
     wallet: String,
     dust: Option<Amount>,
     force: bool,
+    skip_tx_check: bool,
     network: ExtendedNetwork,
     rpc_url: String,
     client: HttpClient,
@@ -259,6 +263,7 @@ impl SpaceCli {
                 wallet: args.wallet.clone(),
                 dust: args.dust.map(|d| Amount::from_sat(d)),
                 force: args.force,
+                skip_tx_check: args.skip_tx_check,
                 network: args.chain,
                 rpc_url: args.spaced_rpc_url.clone().unwrap(),
                 client,
@@ -289,6 +294,7 @@ impl SpaceCli {
                     dust: self.dust,
                     force: self.force,
                     confirmed_only,
+                    skip_tx_check: self.skip_tx_check,
                 },
             )
             .await?;
@@ -587,7 +593,7 @@ async fn handle_commands(
             let fee_rate = FeeRate::from_sat_per_vb(fee_rate).expect("valid fee rate");
             let response = cli
                 .client
-                .wallet_bump_fee(&cli.wallet, txid, fee_rate)
+                .wallet_bump_fee(&cli.wallet, txid, fee_rate, cli.skip_tx_check)
                 .await?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
