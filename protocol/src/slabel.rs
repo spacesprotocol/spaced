@@ -14,7 +14,7 @@ use crate::errors::Error;
 pub const MAX_LABEL_LEN: usize = 62;
 pub const PUNYCODE_PREFIX: &[u8] = b"xn--";
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SLabel([u8; MAX_LABEL_LEN + 1]);
 
 #[cfg(feature = "bincode")]
@@ -87,7 +87,7 @@ impl<'de> Deserialize<'de> for SLabel {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SLabelRef<'a>(pub &'a [u8]);
 
 impl AsRef<[u8]> for SLabel {
