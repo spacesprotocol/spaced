@@ -153,7 +153,7 @@ impl RpcWallet {
     }
 
     fn estimate_fee_rate(source: &BitcoinBlockSource) -> Option<FeeRate> {
-        let params = json!([/* conf_target= */ 6, "unset"]);
+        let params = json!([/* conf_target= */ 2, "unset"]);
 
         let estimate_req = source.rpc.make_request("estimatesmartfee", params);
         if let Ok(res) = source
