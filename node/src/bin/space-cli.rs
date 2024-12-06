@@ -400,7 +400,7 @@ async fn handle_commands(
         }
         Commands::EstimateBid { target } => {
             let response = cli.client.estimate_bid(target).await?;
-            println!("{} sat", Amount::from_sat(response).to_string());
+            println!("{} sat", Amount::from_sat(response).to_sat());
         }
         Commands::GetSpace { space } => {
             let space_hash = hash_space(&space).map_err(|e| ClientError::Custom(e.to_string()))?;
